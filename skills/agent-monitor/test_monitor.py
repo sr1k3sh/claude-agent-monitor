@@ -170,6 +170,41 @@ class AgentMonitorTests(unittest.TestCase):
         os.utime(f, (old, old))
         self.assertNotIn("77777777", [g["session"] for g in self.m.state()["graphs"]])
 
+    def test_each_question_is_a_node_with_its_state(self):
+        f = self.root / "-proj-worktrees-x" / "77777777-0000-0000-0000-000000000000.jsonl"
+        user = lambda ts, c, **k: {"type": "user", "timestamp": ts, "message": {"content": c}, **k}
+        bot = lambda ts, stop, tool=None: {"type": "assistant", "timestamp": ts, "message": {
+            "id": ts, "model": "claude-opus-5-5", "usage": MTOK, "stop_reason": stop,
+            "content": [{"type": "tool_use", "id": ts, "name": "Bash", "input": {"description": tool}}] if tool else []}}
+        write_jsonl(f, [
+            user("2026-11-13T00:00:00Z", "first question"),
+            bot("2026-11-13T00:00:05Z", "end_turn"),
+            user("2026-11-13T00:01:00Z", "<command-message>x</command-message><command-name>/review</command-name><command-args>42</command-args>"),
+            bot("2026-11-13T00:01:05Z", "end_turn"),
+            user("2026-11-13T00:01:30Z", "<task-notification>agent done</task-notification>"),  # same question continues
+            bot("2026-11-13T00:01:40Z", "tool_use", "follow up"),
+            user("2026-11-13T00:02:00Z", "stopped one"),
+            user("2026-11-13T00:02:10Z", [{"type": "text", "text": "[Request interrupted by user]"}]),
+            user("2026-11-13T00:03:00Z", "current one"),
+            bot("2026-11-13T00:03:05Z", "tool_use", "working"),
+            {"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-11-13T00:03:10Z", "content": "next one"},
+            {"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-11-13T00:03:11Z", "content": "<task-notification>x"},
+            {"type": "queue-operation", "operation": "remove", "timestamp": "2026-11-13T00:03:12Z", "content": "<task-notification>x"},
+        ])
+        g = next(g for g in self.m.state()["graphs"] if g["session"] == "77777777")
+        self.assertEqual([(t["label"], t["state"]) for t in g["turns"]], [
+            ("first question", "done"), ("/review 42", "done"), ("stopped one", "done"),
+            ("current one", "running"), ("next one", "pending")])
+        self.assertEqual(g["turns"][1]["tools"], 1)  # the follow-up after the notification counted on /review
+        self.assertAlmostEqual(g["turns"][0]["usd"], 4.0)
+        self.assertEqual(g["turns"][3]["last"], "Bash: working")
+
+    def test_subagents_hang_under_the_question_they_started_in(self):
+        g = next(g for g in self.m.state()["graphs"] if g["session"] == "abcdef12")
+        [t] = g["turns"]
+        self.assertEqual([a["desc"] for a in t["agents"]], ["Plan the swap", "Execute Android"])
+        self.assertEqual(t["state"], "running")
+
     def test_latest_session_for_project_dir(self):
         self.assertEqual(self.m.project_dir("/a/b.c"), "-a-b-c")
         self.assertEqual(self.m.latest_session("/proj"), "abcdef12-0000-0000-0000-000000000000")

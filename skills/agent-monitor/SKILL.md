@@ -19,7 +19,7 @@ Read-only over Claude Code's transcripts in `~/.claude/projects/`; its own state
 4. `open http://127.0.0.1:8765` and tell the user the URL. `?s=<first 8 chars of a session id>` opens that session's tab.
 
 What the page shows:
-- One tab per shown session. The graph is automatic: the Orchestrator (main session) fans out to its agents in start order; agents whose run overlapped share a column.
+- One tab per shown session. The graph is a timeline of your questions in that session (the last 6, plus `+N earlier`): each is `done` ✓ (with time and cost), `running` ▶, `waiting` ⏸ or `pending` ◌ (typed while Claude was busy). Subagents are listed under the question they started in. Sessions without a readable transcript fall back to the Orchestrator → agents graph.
 - A tracked task (below) replaces its session's automatic graph with the task's stage lanes, including stages that have not started.
 - **Waiting on you** (amber, paused ⏸ instead of the spinner): a permission or input prompt (the plugin's `Notification` hook writes `~/.claude/agent-monitor/waiting/<session>.json`) or an unanswered `AskUserQuestion` / `ExitPlanMode`. It clears as soon as the session writes again. The browser tab title shows `⏸ (n) waiting`.
 - Cards for those sessions (`active` = written in the last 2 min) and their subagents: last 25 actions, tokens, estimated USD (`prices.json`, public API rates — an estimate, not the bill).

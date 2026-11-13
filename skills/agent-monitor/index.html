@@ -180,6 +180,42 @@ function layoutAuto(g) {
   return finish(boxes, edges, [], g.waiting ? 'waiting' : g.live ? 'running' : 'done', firsts, x0 + cols.length * (W + GX), PAD_Y + rows * ROW_H);
 }
 
+const IND = 26, AG_H = 84;  // subagents: indented under their question, like a file tree
+
+function agentNode(a) {
+  return {label: a.desc, state: STATE[a.status] || 'pending', ask: a.note, tools: a.tools, elapsed: a.elapsed,
+          usd: a.usd, last: a.last, type: a.type};
+}
+
+const turnCols = g => [...(g.earlier ? [{label: `+${g.earlier} earlier`, state: 'done', note: 'earlier questions', agents: []}] : []), ...g.turns];
+const turnFlat = g => turnCols(g).flatMap(t => [t, ...t.agents.map(agentNode)]);  // same order draw() pushes boxes
+
+function layoutTurns(g) {
+  // the session as a timeline of your questions, left to right; each one's subagents listed below it
+  const x0 = PAD_X + HUB_W + 40, boxes = [], edges = [], cols = turnCols(g);
+  const deepest = Math.max(0, ...cols.map(t => t.agents.length));
+  let prev = null;
+  cols.forEach((t, i) => {
+    const b = {x: x0 + i * (W + GX), y: PAD_Y, n: t};
+    boxes.push(b);
+    if (prev) edges.push([`M${prev.x + W},${prev.y + H / 2} L${b.x},${b.y + H / 2}`, prev.n, t]);
+    t.agents.forEach((a, ai) => {
+      const c = {x: b.x + IND, y: b.y + H + 18 + ai * AG_H, n: agentNode(a), w: W - IND};
+      boxes.push(c);
+      edges.push([`M${b.x + 12},${b.y + H} V${c.y + H / 2} H${c.x}`, t, c.n]);
+    });
+    prev = b;
+  });
+  const states = boxes.map(b => b.n.state);
+  const hub = g.waiting || states.includes('waiting') ? 'waiting' : states.includes('running') ? 'running' : 'done';
+  const L = finish(boxes, edges, [], hub, [], x0 + cols.length * (W + GX), PAD_Y + H + 18 + deepest * AG_H + 10);
+  L.hub.y = PAD_Y;  // in line with the question row, not centred on the agent stack
+  if (cols.length) L.edges.unshift([`M${L.hub.x + HUB_W},${PAD_Y + H / 2} L${x0},${PAD_Y + H / 2}`, {state: 'done'}, cols[0]]);
+  L.hubTitle = '◎ Session';
+  L.hubSub = `${g.turns.filter(t => t.state !== 'pending').length + (g.earlier || 0)} questions`;
+  return L;
+}
+
 function finish(boxes, edges, labels, hubState, firsts, width, height) {
   const hub = {x: PAD_X, y: (height - PAD_Y) / 2 + PAD_Y / 2 - H / 2 + 4, state: hubState};
   firsts.forEach(([b, to]) => {
@@ -205,25 +241,25 @@ function draw(L) {
   });
   const hg = el('g', {class: `node hub ${L.hub.state}`, transform: `translate(${L.hub.x},${L.hub.y})`}, ng);
   el('rect', {class: 'box', width: HUB_W, height: H, rx: 33}, hg);
-  el('text', {x: HUB_W / 2, y: H / 2 - 2, class: 'title', 'text-anchor': 'middle'}, hg).textContent = '◎ Orchestrator';
-  el('text', {x: HUB_W / 2, y: H / 2 + 14, class: 'sub', 'text-anchor': 'middle'}, hg).textContent = L.hub.state === 'waiting' && L.hubNote ? '⏸ waiting on you' : 'main session';
+  el('text', {x: HUB_W / 2, y: H / 2 - 2, class: 'title', 'text-anchor': 'middle'}, hg).textContent = L.hubTitle || '◎ Orchestrator';
+  el('text', {x: HUB_W / 2, y: H / 2 + 14, class: 'sub', 'text-anchor': 'middle'}, hg).textContent = L.hub.state === 'waiting' && L.hubNote ? '⏸ waiting on you' : L.hubSub || 'main session';
   drawn = [];
-  L.boxes.forEach(({x, y, n}) => {
+  L.boxes.forEach(({x, y, n, w = W}) => {
     const g = el('g', {class: `node ${n.state}`, transform: `translate(${x},${y})`}, ng);
     el('title', {}, g).textContent = [n.label, n.type, n.last].filter(Boolean).join('\n');
-    el('rect', {class: 'box', width: W, height: H, rx: 12}, g);
+    el('rect', {class: 'box', width: w, height: H, rx: 12}, g);
     el('circle', {class: 'ring-bg', cx: 26, cy: H / 2, r: 10}, g);
     el('circle', {class: 'ring', cx: 26, cy: H / 2, r: 10}, g);
     if (n.state === 'done') el('path', {class: 'check', d: `M21,${H / 2} l4,4 l7,-8`}, g);
     if (n.state === 'running') {
-      const bars = el('g', {class: 'bars', transform: `translate(${W - 24},8)`}, g);  // top-right, clear of the sub text
+      const bars = el('g', {class: 'bars', transform: `translate(${w - 24},8)`}, g);  // top-right, clear of the sub text
       [0, 6, 12].forEach(bx => el('rect', {x: bx, y: 0, width: 4, height: 12, rx: 1}, bars));
     }
     if (n.state === 'waiting') {  // paused, not loading: the agent is blocked until you answer
-      const pz = el('g', {class: 'pause', transform: `translate(${W - 22},8)`}, g);
+      const pz = el('g', {class: 'pause', transform: `translate(${w - 22},8)`}, g);
       [0, 7].forEach(bx => el('rect', {x: bx, y: 0, width: 4, height: 12, rx: 1}, pz));
     }
-    el('text', {x: 46, y: H / 2 - 4, class: 'title'}, g).textContent = cut(n.label, 17);
+    el('text', {x: 46, y: H / 2 - 4, class: 'title'}, g).textContent = cut(n.label, Math.floor((w - 50) / 7.2));
     const sub = el('text', {x: 46, y: H / 2 + 14, class: 'sub'}, g);
     sub.textContent = subText(n);
     drawn.push({n, sub});
@@ -265,18 +301,19 @@ function showGraph(s) {
   const v = vs.find(x => x.id === selected);
   document.getElementById('ptitle').textContent = cut(v.title, 90);
   document.getElementById('psub').textContent = `${v.project} · s:${v.id}${v.p ? ' · pipeline' : ' · auto'}`;
-  const data = v.p ? v.p.lanes.flatMap(l => l.stages) : v.g.nodes;
+  const turns = !v.p && v.g.turns && v.g.turns.length;
+  const data = v.p ? v.p.lanes.flatMap(l => l.stages) : turns ? turnFlat(v.g) : v.g.nodes;
   const hubNote = v.g ? v.g.note : '';
   const newSig = selected + hubNote + JSON.stringify(data.map(n => [n.label || n.desc, n.state || n.status, n.note]));
   if (newSig !== sig) {
     sig = newSig;
-    const L = v.p ? layoutPipeline(v.p) : layoutAuto(v.g);
+    const L = v.p ? layoutPipeline(v.p) : turns ? layoutTurns(v.g) : layoutAuto(v.g);
     if (hubNote) L.hub.state = 'waiting';
     L.hubNote = hubNote;
     draw(L);
   }
   else {
-    const fresh = v.p ? data : v.g.nodes.map(a => ({tools: a.tools, elapsed: a.elapsed, usd: a.usd, last: a.last}));
+    const fresh = v.p || turns ? data : v.g.nodes.map(a => ({tools: a.tools, elapsed: a.elapsed, usd: a.usd, last: a.last}));
     drawn.forEach((x, i) => Object.assign(x.n, fresh[i]));
     tick();
   }

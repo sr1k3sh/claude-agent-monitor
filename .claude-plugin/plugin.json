@@ -1,7 +1,7 @@
 {
   "name": "agent-monitor",
   "displayName": "Agent Monitor",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Live local dashboard of Claude Code sessions and subagents in the repos you watch: orchestration graph, task stage pipelines, live tool calls, tokens and estimated cost.",
   "author": {
     "name": "sr1k3sh"

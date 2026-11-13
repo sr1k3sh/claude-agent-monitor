@@ -118,6 +118,23 @@ def cost_of(model, u, prices):
     return usd * (2 if u.get("speed") == "fast" else 1)
 
 
+def prompt_label(r):
+    """Label of a user record that starts a new question, else None (tool results, notifications, meta)."""
+    text = user_text(r).strip()
+    if r.get("isMeta") or not text or text.startswith("[Request interrupted"):
+        return None
+    cmd = re.search(r"<command-name>(.*?)</command-name>", text)
+    if cmd:  # a slash command you typed
+        args = re.search(r"<command-args>(.*?)</command-args>", text, re.S)
+        return short(f"{cmd.group(1)} {args.group(1) if args else ''}".strip(), 90)
+    return None if text.startswith("<") else short(text, 90)
+
+
+def user_text(r):
+    c = (r.get("message") or {}).get("content")
+    return c if isinstance(c, str) else " ".join(x.get("text", "") for x in c or [] if isinstance(x, dict) and x.get("type") == "text")
+
+
 _cache = {}  # path -> ((mtime, size), parsed) so 2s polling doesn't re-read unchanged multi-MB transcripts
 
 
@@ -131,6 +148,12 @@ def parse(path):
 
 def _parse(path):
     events, tools, first, last, errors, asking = [], 0, None, None, 0, {}
+    turns, queue = [], []  # one dict per question you asked; queue = prompts typed while Claude was busy
+
+    def start_turn(label, ts):
+        if turns and not turns[-1]["end"]:
+            turns[-1]["end"] = ts
+        turns.append({"label": label, "t0": ts, "end": None, "usd": 0.0, "tools": 0, "last": ""})
     prices, seen = load_prices(), set()
     tok = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "usd": 0.0, "unpriced": set()}
     with open(path, errors="replace") as f:
@@ -144,6 +167,32 @@ def _parse(path):
                 first = first or ts
                 last = ts
             msg = r.get("message") or {}
+            kind = r.get("type")
+            if kind == "queue-operation":
+                op, qc = r.get("operation"), r.get("content")
+                label = prompt_label({"message": {"content": qc}}) if isinstance(qc, str) else None
+                if op == "enqueue":
+                    queue.append(label)
+                elif op == "dequeue" and queue:
+                    queue.pop(0)
+                elif op == "remove":
+                    hit = label if label in queue else (queue[0] if queue else None)
+                    if queue:
+                        queue.remove(hit)
+                    if label and r.get("reason") == "absorbed_mid_turn":  # your follow-up, folded into the running turn
+                        start_turn(label, ts)
+            elif kind == "user":
+                label, text = prompt_label(r), user_text(r)
+                if label:
+                    start_turn(label, ts)
+                elif turns and ("[Request interrupted" in text or "<local-command-stdout>" in text):
+                    turns[-1]["end"] = ts  # Esc, or a local command like /clear that has no model turn
+                elif turns and text.lstrip().startswith("<task-notification>"):
+                    turns[-1]["end"] = None  # a background agent reported back: the same question continues
+            elif kind == "system" and r.get("subtype") == "turn_duration" and turns:
+                turns[-1]["end"] = ts
+            elif kind == "assistant" and turns:
+                turns[-1]["end"] = ts if msg.get("stop_reason") == "end_turn" else None
             u, mid = msg.get("usage"), msg.get("id")
             if r.get("type") == "assistant" and u and mid not in seen:  # streamed blocks repeat the same usage
                 seen.add(mid)
@@ -156,6 +205,8 @@ def _parse(path):
                     tok["unpriced"].add(msg.get("model"))
                 else:
                     tok["usd"] += c
+                    if turns:
+                        turns[-1]["usd"] += c
             content = msg.get("content")
             if not isinstance(content, list):
                 continue
@@ -165,6 +216,9 @@ def _parse(path):
                     asking.pop(c.get("tool_use_id"), None)
                 if r.get("type") == "assistant" and t == "tool_use":
                     tools += 1
+                    if turns:
+                        turns[-1]["tools"] += 1
+                        turns[-1]["last"] = tool_summary(c.get("name"), c.get("input"))
                     if c.get("name") in ASK_TOOLS:
                         asking[c.get("id")] = c.get("name")
                     events.append((ts, "tool", tool_summary(c.get("name"), c.get("input"))))
@@ -174,7 +228,7 @@ def _parse(path):
                     errors += 1
                     events.append((ts, "error", short(c.get("content"), 200)))
     tok["unpriced"] = sorted(m for m in tok["unpriced"] if m and m != "<synthetic>")
-    return events, tools, errors, first, last, tok, bool(asking)
+    return events, tools, errors, first, last, tok, bool(asking), turns, [q for q in queue if q]
 
 
 def first_prompt(path):
@@ -211,7 +265,7 @@ _titles = {}
 
 
 def row(p, kind, meta, status, note=""):
-    events, tools, errors, first, last, tok, _ = parse(p)
+    events, tools, errors, first, last, tok, _, turns, queued = parse(p)
     a, b = iso(first), iso(last)
     mtime = os.path.getmtime(p)
     live = status in ("running", "active", "waiting")
@@ -230,6 +284,7 @@ def row(p, kind, meta, status, note=""):
         "events": events[-25:], "mtime": mtime,
         "t0": a.timestamp() if a else mtime, "t1": time.time() if live else (b.timestamp() if b else mtime),
         "last": next((e[2] for e in reversed(events) if e[1] == "tool"), ""),
+        "turns": turns if kind == "main" else [], "queued": queued if kind == "main" else [],
     }
 
 
@@ -364,6 +419,35 @@ def cards(rows):
     return "".join(out) or "<p>No live sessions in the watched repos. Sessions show here while they or their agents are working.</p>"
 
 
+MAX_TURNS = 6
+
+
+def turn_nodes(m, subs):
+    """The session as a timeline of your questions; each subagent hangs under the question it started in."""
+    now, out = time.time(), []
+    for i, t in enumerate(m["turns"]):
+        t0 = iso(t["t0"]).timestamp()
+        end = iso(t["end"]).timestamp() if t["end"] else None
+        last_turn = i == len(m["turns"]) - 1
+        if not last_turn or end:
+            state = "done"
+        elif m["status"] == "waiting":
+            state = "waiting"
+        else:  # open turn: working, unless nothing wrote for STALE_S (an interrupt we could not see)
+            state = "running" if m["idle"] < STALE_S else "done"
+        out.append({"label": t["label"], "state": state, "t0": t0, "tools": t["tools"], "last": t["last"],
+                    "usd": round(t["usd"], 2), "note": m["note"] if state == "waiting" else "",
+                    "elapsed": int((end or (now if state != "done" else m["mtime"])) - t0), "agents": []})
+    for a in subs:
+        host = next((t for t in reversed(out) if t["t0"] <= a["t0"] + 1), out[0] if out else None)
+        if host is not None:
+            host["agents"].append(a)
+    earlier = max(0, len(out) - MAX_TURNS)
+    out = out[earlier:] + [{"label": q, "state": "pending", "tools": 0, "usd": 0, "elapsed": 0, "last": "",
+                            "note": "queued", "agents": []} for q in m["queued"]]
+    return out, earlier
+
+
 def graphs(rows):
     """One orchestration graph per session that spawned subagents (session = parent dir of subagents/)."""
     mains = {a["session"]: a for a in rows if a["kind"] == "main"}
@@ -376,8 +460,9 @@ def graphs(rows):
         m = mains.get(sid)
         nodes = [{k: a[k] for k in ("id", "desc", "type", "status", "note", "tools", "elapsed", "t0", "t1", "last")}
                  | {"usd": round(a["tok"]["usd"], 2)} for a in sorted(subs, key=lambda a: a["t0"])]
+        turns, earlier = turn_nodes(m, nodes) if m and m["turns"] else ([], 0)
         out.append({
-            "session": sid, "project": (m or subs[0])["project"],
+            "session": sid, "project": (m or subs[0])["project"], "turns": turns, "earlier": earlier,
             "title": m["desc"] if m else f"session {sid}",
             "live": bool(m and m["status"] in ("active", "waiting")) or any(a["status"] in ("running", "waiting") for a in subs),
             "waiting": bool(m and m["status"] == "waiting") or any(a["status"] == "waiting" for a in subs),
