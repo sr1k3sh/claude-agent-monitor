@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent Monitor</title>
+<style>
+:root{--bg:#f6f7f9;--fg:#1d2128;--card:#fff;--muted:#6b7280;--line:#e3e6eb;--edge:#c7ccd4;
+  --done:#2ea043;--run:#2e8bff;--wait:#e0a000;--stall:#e0a000;--err:#d33;--text:#7a5cff}
+@media (prefers-color-scheme:dark){:root{--bg:#121317;--fg:#e6e8ec;--card:#1c1e24;--muted:#9aa1ad;--line:#2c3038;--edge:#3a3f49}}
+*{box-sizing:border-box}
+body{font:14px/1.45 -apple-system,system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:0 auto;padding:16px;max-width:1180px}
+h2{margin:4px 0 12px} h2 small{font-size:12px;color:var(--muted);font-weight:400;margin-left:8px}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:14px}
+.panel h3{margin:0 0 6px;font-size:14px}
+#graphwrap{overflow-x:auto} svg{display:block;min-width:900px;width:100%;height:auto}
+.lane-label{font-size:12px;fill:var(--muted);font-weight:600;letter-spacing:.03em}
+
+/* edges */
+.edge{fill:none;stroke:var(--edge);stroke-width:2.5;stroke-dasharray:6 6}
+.edge.done{stroke:var(--done);stroke-dasharray:none;opacity:.8}
+.edge.active{stroke:var(--run);stroke-dasharray:10 8;animation:flow .8s linear infinite}
+.edge.drawn{stroke-dasharray:var(--len);stroke-dashoffset:var(--len);animation:draw 1s ease-out forwards}
+@keyframes flow{to{stroke-dashoffset:-18}}
+@keyframes draw{to{stroke-dashoffset:0}}
+.packet{fill:var(--run);filter:drop-shadow(0 0 4px var(--run))}
+
+/* nodes */
+.node rect.box{fill:var(--card);stroke:var(--edge);stroke-width:2;stroke-dasharray:5 4}
+.node .title{font-size:13px;font-weight:600;fill:var(--fg)}
+.node .sub{font-size:11px;fill:var(--muted)}
+.node .ring-bg{fill:none;stroke:var(--line);stroke-width:4}
+.node .ring{fill:none;stroke-width:4;stroke-linecap:round;transform-box:fill-box;transform-origin:center}
+.node.pending{opacity:.55}
+.node.done rect.box{stroke:var(--done);stroke-dasharray:none;fill:color-mix(in srgb,var(--done) 9%,var(--card))}
+.node.done .ring{stroke:var(--done);stroke-dasharray:63;stroke-dashoffset:63;animation:fill 1s ease-out forwards}
+.node.done .check{stroke:var(--done);stroke-width:3;fill:none;stroke-linecap:round;stroke-dasharray:20;stroke-dashoffset:20;animation:fill .5s .7s ease-out forwards}
+@keyframes fill{to{stroke-dashoffset:0}}
+.node.running rect.box{stroke:var(--run);stroke-dasharray:none;fill:color-mix(in srgb,var(--run) 9%,var(--card));animation:glow 1.6s ease-in-out infinite}
+.node.running .ring{stroke:var(--run);stroke-dasharray:22 41;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes glow{50%{filter:drop-shadow(0 0 8px color-mix(in srgb,var(--run) 60%,transparent))}}
+.node.waiting rect.box,.node.stalled rect.box{stroke:var(--wait);stroke-dasharray:none;animation:blink 1.4s ease-in-out infinite}
+.node.waiting .ring,.node.stalled .ring{stroke:var(--wait);stroke-dasharray:4 6}
+@keyframes blink{50%{fill:color-mix(in srgb,var(--wait) 16%,var(--card))}}
+.node .bars rect{fill:var(--run);opacity:.85;transform-box:fill-box;transform-origin:bottom;animation:eq 1s ease-in-out infinite}
+.node .bars rect:nth-child(2){animation-delay:.2s}.node .bars rect:nth-child(3){animation-delay:.4s}
+@keyframes eq{50%{transform:scaleY(.3)}}
+
+.now{font:12px ui-monospace,Menlo,monospace;color:var(--muted);margin-top:6px;min-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.now b{color:var(--run)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:6px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+/* agent cards */
+.card{background:var(--card);border:1px solid var(--line);border-left:5px solid #888;border-radius:8px;margin:10px 0;padding:10px 14px}
+.card.running,.card.active{border-left-color:var(--run)} .card.idle{border-left-color:var(--edge)}
+.group{font-size:14px;margin:18px 0 4px} .group small{color:var(--muted);font-weight:400}
+.cost{color:var(--done);font-weight:600} .card.stalled{border-left-color:var(--stall)} .card.done{border-left-color:var(--done)}
+summary{cursor:pointer} summary small{display:block;color:var(--muted);margin-top:3px}
+.st{text-transform:uppercase;font-size:11px;letter-spacing:.05em;margin-right:6px}
+ol{list-style:none;padding:0;margin:8px 0 0;font:12px/1.5 ui-monospace,Menlo,monospace;max-height:340px;overflow:auto}
+li{padding:2px 0;border-top:1px solid var(--line);word-break:break-word} li span{color:var(--muted)}
+li.text{color:var(--text)} li.error{color:var(--err)}
+.card.fresh{animation:slidein .4s ease-out}
+@keyframes slidein{from{opacity:0;transform:translateY(-6px)}}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 8px}
+.tab{border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:999px;padding:4px 10px;font:12px system-ui;cursor:pointer;max-width:320px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tab.sel{border-color:var(--run);background:color-mix(in srgb,var(--run) 14%,var(--card))}
+.tab .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--muted);margin-right:6px;vertical-align:1px}
+.tab.live .dot{background:var(--run);animation:glow 1.6s infinite}
+.ptitle-sub{font-weight:400;color:var(--muted);font-size:12px;margin-left:6px}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important}}
+</style>
+</head>
+<body>
+<h2>Agent Monitor <small id="counts">loading…</small></h2>
+<section class="panel">
+  <div class="tabs" id="tabs" role="tablist" aria-label="Sessions"></div>
+  <h3><span id="ptitle">Orchestration</span><span class="ptitle-sub" id="psub"></span></h3>
+  <div id="graphwrap"><svg id="graph" role="img" aria-label="Orchestration graph"></svg></div>
+  <div class="now" id="now"></div>
+  <div class="legend">
+    <span><i style="background:var(--done)"></i>done</span>
+    <span><i style="background:var(--run)"></i>running</span>
+    <span><i style="background:var(--wait)"></i>waiting on you / stalled</span>
+    <span><i style="border:1px dashed var(--muted)"></i>pending</span>
+  </div>
+</section>
+<div id="cards"></div>
+
+<script>
+const NS = 'http://www.w3.org/2000/svg';
+const W = 168, H = 66, GX = 46, ROW_H = 112, PAD_X = 16, PAD_Y = 34, HUB_W = 120;
+let sig = '', fetchedAt = 0, drawn = [], seenCards = new Set(), opened = new Set(), closed = new Set();
+let selected = null, last = null;
+try { selected = new URLSearchParams(location.search).get('s') || localStorage.getItem('agentmon.session'); } catch (e) {}
+
+const el = (tag, attrs = {}, parent) => {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (parent) parent.appendChild(e);
+  return e;
+};
+const fmt = s => s >= 3600 ? `${Math.floor(s / 3600)}h${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}m`
+  : `${Math.floor(s / 60)}m${String(Math.floor(s % 60)).padStart(2, '0')}s`;
+const cut = (t, n) => t.length > n ? t.slice(0, n - 1) + '…' : t;
+const STATE = {running: 'running', 'stalled?': 'stalled', done: 'done'};
+
+function subText(n, extra = 0) {
+  const usd = n.usd ? ` · $${n.usd.toFixed(2)}` : '';
+  if (n.state === 'running') return `${fmt(n.elapsed + extra)} · ${n.tools} tools${usd}`;
+  if (n.state === 'done') return n.note || (n.elapsed ? `${fmt(n.elapsed)}${usd}` : 'done');
+  if (n.state === 'waiting') return n.note || 'waiting on you';
+  if (n.state === 'stalled') return 'no writes 10m+';
+  return n.note || 'pending';
+}
+
+/* layouts return {hub, boxes:[{x,y,n}], edges:[[d, from, to]], labels:[[x,y,text]], width, height} */
+function layoutPipeline(p) {
+  const boxes = [], edges = [], labels = [], pos = [];
+  const x0 = PAD_X + HUB_W + 40;
+  p.lanes.forEach((lane, li) => {
+    const y = PAD_Y + li * ROW_H;
+    labels.push([x0, y - 8, lane.name]);
+    pos[li] = lane.stages.map((n, si) => ({x: x0 + si * (W + GX), y, n}));
+    boxes.push(...pos[li]);
+  });
+  pos.forEach((lane, li) => {
+    lane.forEach((a, si) => { const b = lane[si + 1]; if (b) edges.push([`M${a.x + W},${a.y + H / 2} L${b.x},${b.y + H / 2}`, a.n, b.n]); });
+    const next = pos[li + 1];
+    if (next && lane.length && next.length) {
+      const a = lane[lane.length - 1], b = next[0];
+      const x1 = a.x + W / 2, y1 = a.y + H, x2 = b.x + W / 2, y2 = b.y, my = (y1 + y2) / 2;
+      edges.push([`M${x1},${y1} C${x1},${my + 20} ${x2},${my - 20} ${x2},${y2}`, a.n, b.n]);
+    }
+  });
+  const all = boxes.map(b => b.n);
+  const hubState = all.some(n => n.state === 'running') ? 'running' : all.every(n => n.state === 'done') ? 'done' : 'waiting';
+  const firsts = pos.filter(l => l.length).map(l => {
+    const sts = l.map(a => a.n.state);
+    return [l[0], {state: sts.includes('running') ? 'running' : sts.every(s => s === 'done') ? 'done' : 'pending'}];
+  });
+  const cols = Math.max(...p.lanes.map(l => l.stages.length));
+  return finish(boxes, edges, labels, hubState, firsts, x0 + cols * (W + GX), PAD_Y + p.lanes.length * ROW_H);
+}
+
+function layoutAuto(g) {
+  // agents that overlap in time share a column (ran in parallel); later ones chain to the right
+  const cols = [];
+  for (const a of g.nodes) {
+    const col = cols[cols.length - 1];
+    if (col && a.t0 < Math.min(...col.map(c => c.t1))) col.push(a); else cols.push([a]);
+  }
+  const rows = Math.max(1, ...cols.map(c => c.length));
+  const x0 = PAD_X + HUB_W + 50, boxes = [], edges = [], byCol = [];
+  cols.forEach((col, ci) => {
+    const top = PAD_Y + (rows - col.length) * ROW_H / 2;
+    byCol[ci] = col.map((a, ri) => {
+      const n = {label: a.desc, state: STATE[a.status] || 'pending', tools: a.tools, elapsed: a.elapsed,
+                 usd: a.usd, last: a.last, type: a.type, t0: a.t0, t1: a.t1};
+      const b = {x: x0 + ci * (W + GX), y: top + ri * ROW_H, n};
+      boxes.push(b);
+      return b;
+    });
+  });
+  byCol.forEach((col, ci) => {
+    if (!ci) return;
+    col.forEach(b => {  // link from whichever agent in the previous column finished last before this one started
+      const prev = byCol[ci - 1].filter(p => p.n.t1 <= b.n.t0 + 1).sort((p, q) => q.n.t1 - p.n.t1)[0] || byCol[ci - 1][0];
+      const x1 = prev.x + W, y1 = prev.y + H / 2, x2 = b.x, y2 = b.y + H / 2;
+      edges.push([`M${x1},${y1} C${x1 + 25},${y1} ${x2 - 25},${y2} ${x2},${y2}`, prev.n, b.n]);
+    });
+  });
+  const firsts = (byCol[0] || []).map(b => [b, b.n]);
+  return finish(boxes, edges, [], g.live ? 'running' : 'done', firsts, x0 + cols.length * (W + GX), PAD_Y + rows * ROW_H);
+}
+
+function finish(boxes, edges, labels, hubState, firsts, width, height) {
+  const hub = {x: PAD_X, y: (height - PAD_Y) / 2 + PAD_Y / 2 - H / 2 + 4, state: hubState};
+  firsts.forEach(([b, to]) => {
+    const x1 = hub.x + HUB_W, y1 = hub.y + H / 2, x2 = b.x, y2 = b.y + H / 2;
+    edges.unshift([`M${x1},${y1} C${x1 + 25},${y1} ${x2 - 25},${y2} ${x2},${y2}`, {state: 'done'}, to]);
+  });
+  return {hub, boxes, edges, labels, width: width + PAD_X, height};
+}
+
+function draw(L) {
+  const svg = document.getElementById('graph');
+  svg.replaceChildren();
+  svg.setAttribute('viewBox', `0 0 ${L.width} ${L.height}`);
+  svg.style.minWidth = `${Math.max(600, L.width * 0.8)}px`;
+  const eg = el('g', {}, svg), pg = el('g', {}, svg), ng = el('g', {}, svg);
+  L.labels.forEach(([x, y, t]) => { el('text', {x, y, class: 'lane-label'}, svg).textContent = t; });
+  L.edges.forEach(([d, from, to]) => {
+    const cls = to.state === 'running' ? 'active' : (from.state === 'done' && to.state !== 'pending') ? 'done drawn' : '';
+    const path = el('path', {d, class: `edge ${cls}`}, eg);
+    if (cls.includes('drawn')) path.style.setProperty('--len', path.getTotalLength());
+    if (cls === 'active') el('animateMotion', {dur: '1.4s', repeatCount: 'indefinite', path: d}, el('circle', {r: 5, class: 'packet'}, pg));
+  });
+  const hg = el('g', {class: `node hub ${L.hub.state}`, transform: `translate(${L.hub.x},${L.hub.y})`}, ng);
+  el('rect', {class: 'box', width: HUB_W, height: H, rx: 33}, hg);
+  el('text', {x: HUB_W / 2, y: H / 2 - 2, class: 'title', 'text-anchor': 'middle'}, hg).textContent = '◎ Orchestrator';
+  el('text', {x: HUB_W / 2, y: H / 2 + 14, class: 'sub', 'text-anchor': 'middle'}, hg).textContent = 'main session';
+  drawn = [];
+  L.boxes.forEach(({x, y, n}) => {
+    const g = el('g', {class: `node ${n.state}`, transform: `translate(${x},${y})`}, ng);
+    el('title', {}, g).textContent = [n.label, n.type, n.last].filter(Boolean).join('\n');
+    el('rect', {class: 'box', width: W, height: H, rx: 12}, g);
+    el('circle', {class: 'ring-bg', cx: 26, cy: H / 2, r: 10}, g);
+    el('circle', {class: 'ring', cx: 26, cy: H / 2, r: 10}, g);
+    if (n.state === 'done') el('path', {class: 'check', d: `M21,${H / 2} l4,4 l7,-8`}, g);
+    if (n.state === 'running') {
+      const bars = el('g', {class: 'bars', transform: `translate(${W - 24},${H - 22})`}, g);
+      [0, 6, 12].forEach(bx => el('rect', {x: bx, y: 0, width: 4, height: 12, rx: 1}, bars));
+    }
+    el('text', {x: 46, y: H / 2 - 4, class: 'title'}, g).textContent = cut(n.label, 17);
+    const sub = el('text', {x: 46, y: H / 2 + 14, class: 'sub'}, g);
+    sub.textContent = subText(n);
+    drawn.push({n, sub});
+  });
+}
+
+function tick() {  // live clocks on running nodes without re-rendering (keeps animations smooth)
+  const extra = (Date.now() - fetchedAt) / 1000;
+  drawn.forEach(({n, sub}) => { if (n.state === 'running') sub.textContent = subText(n, extra); });
+}
+
+function views(s) {
+  // one view per session; the hand-written pipeline replaces the auto graph for its session
+  const v = s.graphs.map(g => ({id: g.session, live: g.live, usd: g.usd, title: g.title, project: g.project, g}));
+  for (const p of s.pipelines) {
+    const hit = v.find(x => x.id === p.session);
+    if (hit) Object.assign(hit, {p, title: p.title});
+    else v.push({id: p.session || p.title, live: false, usd: 0, title: p.title, project: '', p});
+  }
+  return v;
+}
+
+function showGraph(s) {
+  const vs = views(s);
+  if (!vs.length) { document.getElementById('tabs').replaceChildren(); document.getElementById('graph').replaceChildren(); document.getElementById('now').replaceChildren(); document.getElementById('psub').textContent = ''; drawn = []; sig = ''; document.getElementById('ptitle').textContent = 'No live sessions'; return; }
+  if (!vs.some(v => v.id === selected)) selected = vs[0].id;
+  const tabs = document.getElementById('tabs');
+  tabs.replaceChildren(...vs.map(v => {
+    const b = document.createElement('button');
+    b.className = `tab${v.id === selected ? ' sel' : ''}${v.live ? ' live' : ''}`;
+    b.setAttribute('role', 'tab');
+    b.setAttribute('aria-selected', v.id === selected);
+    b.title = `${v.title} (${v.project} · ${v.id})`;
+    b.innerHTML = '<span class="dot"></span>';
+    b.append(`${cut(v.title, 38)}${v.usd ? ` · $${v.usd.toFixed(2)}` : ''}`);
+    b.onclick = () => { selected = v.id; try { localStorage.setItem('agentmon.session', v.id); } catch (e) {} sig = ''; showGraph(last); };
+    return b;
+  }));
+  const v = vs.find(x => x.id === selected);
+  document.getElementById('ptitle').textContent = cut(v.title, 90);
+  document.getElementById('psub').textContent = `${v.project} · s:${v.id}${v.p ? ' · pipeline' : ' · auto'}`;
+  const data = v.p ? v.p.lanes.flatMap(l => l.stages) : v.g.nodes;
+  const newSig = selected + JSON.stringify(data.map(n => [n.label || n.desc, n.state || n.status, n.note]));
+  if (newSig !== sig) { sig = newSig; draw(v.p ? layoutPipeline(v.p) : layoutAuto(v.g)); }
+  else {
+    const fresh = v.p ? data : v.g.nodes.map(a => ({tools: a.tools, elapsed: a.elapsed, usd: a.usd, last: a.last}));
+    drawn.forEach((x, i) => Object.assign(x.n, fresh[i]));
+    tick();
+  }
+  const now = document.getElementById('now');
+  now.replaceChildren(...drawn.filter(x => x.n.state === 'running').map(({n}) => {
+    const d = document.createElement('div');
+    const b = document.createElement('b');
+    b.textContent = `▶ ${cut(n.label, 40)}: `;
+    d.append(b, n.last || '…');
+    return d;
+  }));
+}
+
+function updateCards(htmlStr) {
+  const box = document.getElementById('cards');
+  box.querySelectorAll('details').forEach(d => {
+    if (d.open) { opened.add(d.dataset.id); closed.delete(d.dataset.id); }
+    else { closed.add(d.dataset.id); opened.delete(d.dataset.id); }
+  });
+  box.innerHTML = htmlStr;
+  box.querySelectorAll('details').forEach(d => {
+    const id = d.dataset.id;
+    d.open = opened.has(id) || (!closed.has(id) && ['running', 'active'].includes(d.dataset.status));
+    if (!seenCards.has(id)) { d.classList.add('fresh'); seenCards.add(id); }
+  });
+}
+
+async function poll() {
+  try {
+    const s = await (await fetch('/api', {cache: 'no-store'})).json();
+    fetchedAt = Date.now();
+    last = s;
+    const c = s.counts;
+    document.getElementById('counts').textContent =
+      `${s.scopes.join(', ') || 'no watched repos'} · ${c.active} active sessions · ${c.running} running agents · ${c['stalled?']} stalled? · ${c.done} done · $${c.usd.toFixed(2)} · hides ${s.hide_after_min}m after last activity · live`;
+    showGraph(s);
+    updateCards(s.cards);
+  } catch (e) {
+    document.getElementById('counts').textContent = 'server unreachable — retrying…';
+  }
+}
+poll();
+setInterval(poll, 2000);
+setInterval(tick, 1000);
+</script>
+</body>
+</html>

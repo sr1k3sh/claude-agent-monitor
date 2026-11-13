@@ -1,0 +1,13 @@
+{
+  "_note": "USD per 1M tokens. Source: claude-api skill model table (cached 2026-10-06). cache_write_5m = 1.25x input, cache_write_1h = 2x input (standard multipliers). Longest model-id prefix wins; date suffixes are ignored. speed=fast is billed 2x.",
+  "claude-fable-5-1":  {"input": 10.0, "output": 50.0, "cache_read": 0.25},
+  "claude-fable-5":    {"input": 10.0, "output": 50.0, "cache_read": 1.00},
+  "claude-opus-5-5":   {"input": 4.0,  "output": 20.0, "cache_read": 0.20},
+  "claude-opus-5":     {"input": 5.0,  "output": 25.0, "cache_read": 0.50},
+  "claude-opus-4":     {"input": 5.0,  "output": 25.0, "cache_read": 0.50},
+  "claude-sonnet-5-5": {"input": 2.0,  "output": 10.0, "cache_read": 0.20},
+  "claude-sonnet-5":   {"input": 2.0,  "output": 10.0, "cache_read": 0.20},
+  "claude-sonnet-4":   {"input": 3.0,  "output": 15.0, "cache_read": 0.30},
+  "claude-haiku-5-5":  {"input": 0.10, "output": 0.50, "cache_read": 0.01},
+  "claude-haiku-4-5":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.10}
+}

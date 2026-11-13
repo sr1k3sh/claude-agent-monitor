@@ -1,0 +1,14 @@
+{
+  "name": "sr1k3sh-plugins",
+  "owner": {
+    "name": "sr1k3sh"
+  },
+  "description": "sr1k3sh's Claude Code plugins",
+  "plugins": [
+    {
+      "name": "agent-monitor",
+      "source": "./",
+      "description": "Live local dashboard of Claude Code sessions and subagents"
+    }
+  ]
+}
