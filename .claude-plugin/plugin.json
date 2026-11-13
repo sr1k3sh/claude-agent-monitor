@@ -1,7 +1,23 @@
 {
   "name": "agent-monitor",
-  "version": "0.1.0",
+  "displayName": "Agent Monitor",
+  "version": "0.2.0",
   "description": "Live local dashboard of Claude Code sessions and subagents in the repos you watch: orchestration graph, task stage pipelines, live tool calls, tokens and estimated cost.",
-  "author": { "name": "sr1k3sh" },
-  "license": "MIT"
+  "author": {
+    "name": "sr1k3sh"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/sr1k3sh/claude-agent-monitor#readme",
+  "repository": "https://github.com/sr1k3sh/claude-agent-monitor",
+  "documentationUrl": "https://github.com/sr1k3sh/claude-agent-monitor#readme",
+  "supportUrl": "https://github.com/sr1k3sh/claude-agent-monitor/issues",
+  "icon": "./.claude-plugin/icon.png",
+  "keywords": [
+    "subagents",
+    "dashboard",
+    "monitoring",
+    "orchestration",
+    "cost",
+    "observability"
+  ]
 }

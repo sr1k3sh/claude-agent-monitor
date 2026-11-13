@@ -17,6 +17,14 @@ Sessions that weren't tracked get an automatic graph. Agents that ran at the sam
 
 It only reads Claude Code's transcripts in `~/.claude/projects/` and keeps its own state in `~/.claude/agent-monitor/`. It uses only the Python standard library and listens on `127.0.0.1`.
 
+## What it runs and touches
+
+- **Reads:** Claude Code's session transcripts under `~/.claude/projects/` (`*.jsonl` and `*/subagents/agent-*.jsonl` with their `.meta.json`), only for the repos in your watch list.
+- **Writes:** only `~/.claude/agent-monitor/scopes.json` (the watch list) and `~/.claude/agent-monitor/pipelines/*.json` (task pipelines you or Claude create).
+- **Runs:** `python3 monitor.py`, a stdlib HTTP server bound to `127.0.0.1:8765`, and `git rev-parse --git-common-dir` to map a worktree to its main checkout. The skill also `curl`s `http://127.0.0.1:8765/api` to see whether the server is up, and `open`s the page in your browser.
+- **Network:** no outbound requests. Nothing is sent anywhere; the page and its data never leave your machine. No dependencies to install.
+- **Personal data:** transcripts can contain whatever you typed in your sessions; the dashboard shows excerpts of them (prompts, tool calls) to you, locally. Nothing is stored beyond the two files above.
+
 ## Install
 
 ```sh
