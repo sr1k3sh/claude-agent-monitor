@@ -11,6 +11,7 @@
   "repository": "https://github.com/sr1k3sh/claude-agent-monitor",
   "documentationUrl": "https://github.com/sr1k3sh/claude-agent-monitor#readme",
   "supportUrl": "https://github.com/sr1k3sh/claude-agent-monitor/issues",
+  "privacyPolicyUrl": "https://github.com/sr1k3sh/claude-agent-monitor/blob/main/PRIVACY.md",
   "icon": "./.claude-plugin/icon.png",
   "keywords": [
     "subagents",
