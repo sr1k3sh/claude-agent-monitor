@@ -139,6 +139,37 @@ class AgentMonitorTests(unittest.TestCase):
         finally:
             os.environ["AGENT_MONITOR_SCOPE"] = "/proj"
 
+    def test_permission_prompt_pauses_blocked_agent_until_it_writes(self):
+        sid = "abcdef12-0000-0000-0000-000000000000"
+        a2 = self.root / "-proj" / sid / "subagents" / "agent-a2.jsonl"
+        old = time.time() - 30
+        os.utime(a2, (old, old))
+        self.m.notify({"session_id": sid, "message": "Claude needs your permission to use Bash"})
+        self.m.notify({"session_id": "../evil", "message": "x"})  # not a file name: ignored
+        self.assertEqual([p.name for p in (self.home / "waiting").iterdir()], [sid + ".json"])
+        s = self.m.state()
+        g = next(g for g in s["graphs"] if g["session"] == "abcdef12")
+        self.assertTrue(g["waiting"])
+        self.assertEqual({n["desc"]: n["status"] for n in g["nodes"]}["Execute Android"], "waiting")
+        self.assertEqual(s["counts"]["waiting"], 1)
+        self.assertEqual(s["pipelines"][0]["lanes"][0]["stages"][1]["state"], "waiting")
+        later = time.time() + 5  # the agent writes again once you answer
+        os.utime(a2, (later, later))
+        self.assertFalse(next(g for g in self.m.state()["graphs"] if g["session"] == "abcdef12")["waiting"])
+
+    def test_unanswered_ask_question_marks_main_session_waiting(self):
+        f = self.root / "-proj-worktrees-x" / "77777777-0000-0000-0000-000000000000.jsonl"
+        ask = {"type": "assistant", "timestamp": "2026-11-13T00:00:01Z", "message": {"id": "q", "content": [
+            {"type": "tool_use", "id": "t1", "name": "AskUserQuestion", "input": {}}]}}
+        write_jsonl(f, [ask])
+        old = time.time() - 5 * 60  # idle past ACTIVE_S, still shown because it is waiting on you
+        os.utime(f, (old, old))
+        g = next(g for g in self.m.state()["graphs"] if g["session"] == "77777777")
+        self.assertTrue(g["waiting"])
+        write_jsonl(f, [ask, {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1"}]}}])
+        os.utime(f, (old, old))
+        self.assertNotIn("77777777", [g["session"] for g in self.m.state()["graphs"]])
+
     def test_latest_session_for_project_dir(self):
         self.assertEqual(self.m.project_dir("/a/b.c"), "-a-b-c")
         self.assertEqual(self.m.latest_session("/proj"), "abcdef12-0000-0000-0000-000000000000")

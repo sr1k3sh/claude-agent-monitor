@@ -12,6 +12,7 @@ every 2s and updates in place (keeps animations).
   monitor.py [serve] [--port 8765]          run the dashboard
   monitor.py scope add|remove|list [DIR]    watch / unwatch a repo (default DIR: the current directory)
   monitor.py session [--cwd DIR]            print the newest main session id for a project dir
+  monitor.py notify                         Notification hook: mark the stdin session as waiting on the user
 """
 import argparse, glob, html, json, os, re, subprocess, sys, time
 from datetime import datetime
@@ -55,6 +56,29 @@ def edit_scopes(op, path):
         json.dump(new, f, indent=2)
     return new
 STALE_S = 600  # running agent with no writes for 10 min is shown as "stalled?"
+ASK_TOOLS = {"AskUserQuestion", "ExitPlanMode"}  # a tool_use of these without its result = waiting on the user
+WAIT_DIR = os.path.join(HOME, "waiting")
+
+
+def notify(data):
+    """Notification hook (permission / input prompt): one small file per session, its mtime = when it asked."""
+    sid = str(data.get("session_id", ""))
+    if not re.fullmatch(r"[\w-]+", sid):  # used as a file name
+        return
+    os.makedirs(WAIT_DIR, exist_ok=True)
+    with open(os.path.join(WAIT_DIR, sid + ".json"), "w") as f:
+        json.dump({"message": short(data.get("message") or "needs your input", 120)}, f)
+
+
+def wait_flag(sid):
+    """(mtime, message) of the session's last prompt to the user; a file written after it means it was answered.
+    shortcut: flag files are never deleted (a few bytes per session), prune if that ever matters."""
+    p = os.path.join(WAIT_DIR, sid + ".json")
+    try:
+        with open(p) as f:
+            return os.path.getmtime(p), json.load(f).get("message", "")
+    except (OSError, ValueError, AttributeError):
+        return 0, ""
 
 
 def short(v, n=140):
@@ -106,7 +130,7 @@ def parse(path):
 
 
 def _parse(path):
-    events, tools, first, last, errors = [], 0, None, None, 0
+    events, tools, first, last, errors, asking = [], 0, None, None, 0, {}
     prices, seen = load_prices(), set()
     tok = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "usd": 0.0, "unpriced": set()}
     with open(path, errors="replace") as f:
@@ -137,8 +161,12 @@ def _parse(path):
                 continue
             for c in content:
                 t = c.get("type")
+                if t == "tool_result":
+                    asking.pop(c.get("tool_use_id"), None)
                 if r.get("type") == "assistant" and t == "tool_use":
                     tools += 1
+                    if c.get("name") in ASK_TOOLS:
+                        asking[c.get("id")] = c.get("name")
                     events.append((ts, "tool", tool_summary(c.get("name"), c.get("input"))))
                 elif r.get("type") == "assistant" and t == "text" and c.get("text", "").strip():
                     events.append((ts, "text", short(c["text"], 300)))
@@ -146,7 +174,7 @@ def _parse(path):
                     errors += 1
                     events.append((ts, "error", short(c.get("content"), 200)))
     tok["unpriced"] = sorted(m for m in tok["unpriced"] if m and m != "<synthetic>")
-    return events, tools, errors, first, last, tok
+    return events, tools, errors, first, last, tok, bool(asking)
 
 
 def first_prompt(path):
@@ -182,11 +210,11 @@ ACTIVE_S = 120  # main session written in the last 2 min counts as active
 _titles = {}
 
 
-def row(p, kind, meta, status):
-    events, tools, errors, first, last, tok = parse(p)
+def row(p, kind, meta, status, note=""):
+    events, tools, errors, first, last, tok, _ = parse(p)
     a, b = iso(first), iso(last)
     mtime = os.path.getmtime(p)
-    live = status in ("running", "active")
+    live = status in ("running", "active", "waiting")
     return {
         "id": os.path.basename(p).removeprefix("agent-").removesuffix(".jsonl"),
         "kind": kind,
@@ -194,7 +222,7 @@ def row(p, kind, meta, status):
         "session": p.split("/")[-3][:8] if kind == "sub" else os.path.basename(p)[:8],
         "desc": meta.get("description", os.path.basename(p)),
         "type": meta.get("agentType", "?"),
-        "status": status, "tools": tools, "errors": errors, "tok": tok,
+        "status": status, "note": note, "tools": tools, "errors": errors, "tok": tok,
         # live rows: elapsed counts to now so the client clock ticks from the real start
         "elapsed": int(((time.time() if live else b.timestamp()) - a.timestamp())) if a and b else 0,
         "idle": int(time.time() - mtime),
@@ -225,14 +253,10 @@ def agents():
             sid = p.split("/")[-3]
             last[sid] = (d, max(last.get(sid, (d, 0))[1], os.path.getmtime(p)))
     for sid, (d, t) in last.items():
-        if now - t > HIDE_S:
+        flag_t, flag_msg = wait_flag(sid)
+        if now - max(t, flag_t) > HIDE_S:
             continue
-        main = os.path.join(d, sid + ".jsonl")
-        if os.path.exists(main):
-            if main not in _titles:
-                _titles[main] = first_prompt(main) or sid
-            status = "active" if now - os.path.getmtime(main) < ACTIVE_S else "idle"
-            out.append(row(main, "main", {"description": _titles[main], "agentType": "main session"}, status))
+        subs = []
         for p in glob.glob(os.path.join(d, sid, "subagents", "agent-*.jsonl")):
             meta = {}
             try:
@@ -241,9 +265,23 @@ def agents():
             except (OSError, ValueError):
                 pass
             mtime = os.path.getmtime(p)
-            status = "done" if meta.get("finished") else "stalled?" if now - mtime > STALE_S else "running"
-            out.append(row(p, "sub", meta, status))
-    order = {"active": 0, "running": 1, "stalled?": 2, "idle": 3, "done": 4}
+            # a prompt newer than this agent's last write: it is the one blocked on the user (or paused behind it)
+            status = ("done" if meta.get("finished") else "waiting" if flag_t > mtime
+                      else "stalled?" if now - mtime > STALE_S else "running")
+            subs.append(row(p, "sub", meta, status, flag_msg if status == "waiting" else ""))
+        main = os.path.join(d, sid + ".jsonl")
+        if os.path.exists(main):
+            if main not in _titles:
+                _titles[main] = first_prompt(main) or sid
+            mtime, note = os.path.getmtime(main), ""
+            if parse(main)[6]:
+                note = "asked you a question"
+            elif flag_t > t and not any(a["status"] == "waiting" for a in subs):  # nothing in the session wrote since
+                note = flag_msg
+            status = "waiting" if note else "active" if now - mtime < ACTIVE_S else "idle"
+            out.append(row(main, "main", {"description": _titles[main], "agentType": "main session"}, status, note))
+        out += subs
+    order = {"waiting": 0, "active": 1, "running": 2, "stalled?": 3, "idle": 4, "done": 5}
     return sorted(out, key=lambda x: (order[x["status"]], -x["mtime"]))
 
 
@@ -278,7 +316,9 @@ def pipeline(rows, spec):
                 node.update(state=s["manual"], note=s.get("note", ""))
             elif any(a["status"] != "done" for a in hits):
                 live = [a for a in hits if a["status"] != "done"]
-                node.update(state="stalled" if all(a["status"] == "stalled?" for a in live) else "running",
+                node.update(state="waiting" if any(a["status"] == "waiting" for a in live)
+                            else "stalled" if all(a["status"] == "stalled?" for a in live) else "running",
+                            ask=next((a["note"] for a in live if a["note"]), ""),
                             elapsed=max(a["elapsed"] for a in live),
                             last=next((e[2] for a in live for e in reversed(a["events"]) if e[1] == "tool"), ""))
             elif hits:
@@ -307,7 +347,7 @@ def card(a):
     )
     return f"""
 <details class="card {a['status'].rstrip('?')}" data-id="{a['id']}" data-status="{a['status']}">
-<summary><b class="st">{a['status']}</b> <b>{html.escape(a['desc'])}</b>
+<summary><b class="st">{a['status']}</b> <b>{html.escape(a['desc'])}</b>{f' <span class="ask">⏸ {html.escape(a["note"])}</span>' if a["note"] else ""}
 <small>{a['type']} · {a['project']} · s:{a['session']} · start {a['start']} · ran {fmt(a['elapsed'])} ·
 {a['tools']} tools · {a['errors']} errors · last write {fmt(a['idle'])} ago</small>
 <small>{usage_line(a['tok'])}</small></summary>
@@ -334,12 +374,14 @@ def graphs(rows):
     out = []
     for sid, subs in by.items():
         m = mains.get(sid)
-        nodes = [{k: a[k] for k in ("id", "desc", "type", "status", "tools", "elapsed", "t0", "t1", "last")}
+        nodes = [{k: a[k] for k in ("id", "desc", "type", "status", "note", "tools", "elapsed", "t0", "t1", "last")}
                  | {"usd": round(a["tok"]["usd"], 2)} for a in sorted(subs, key=lambda a: a["t0"])]
         out.append({
             "session": sid, "project": (m or subs[0])["project"],
             "title": m["desc"] if m else f"session {sid}",
-            "live": bool(m and m["status"] == "active") or any(a["status"] == "running" for a in subs),
+            "live": bool(m and m["status"] in ("active", "waiting")) or any(a["status"] in ("running", "waiting") for a in subs),
+            "waiting": bool(m and m["status"] == "waiting") or any(a["status"] == "waiting" for a in subs),
+            "note": m["note"] if m else "",
             "mtime": max([a["mtime"] for a in subs + ([m] if m else [])]),
             "usd": round(sum(a["tok"]["usd"] for a in subs), 2),
             "nodes": nodes,
@@ -352,11 +394,11 @@ def state():
     pipes = pipelines(rows)
     finished = {p["session"] for p in pipes if all(n["state"] == "done" for l in p["lanes"] for n in l["stages"])}
     # a session without agents shows only while it is being written (a live chat), not while idle
-    shown = {a["session"] for a in rows if a["kind"] == "sub" or a["status"] == "active"}
+    shown = {a["session"] for a in rows if a["kind"] == "sub" or a["status"] in ("active", "waiting")}
     rows = [a for a in rows if a["session"] in shown and a["session"] not in finished]
     live = {a["session"] for a in rows}
     pipes = [p for p in pipes if p["session"] in live]
-    counts = {s: sum(a["status"] == s for a in rows) for s in ("active", "running", "stalled?", "idle", "done")}
+    counts = {s: sum(a["status"] == s for a in rows) for s in ("waiting", "active", "running", "stalled?", "idle", "done")}
     counts["usd"] = round(sum(a["tok"]["usd"] for a in rows), 2)
     return {"pipelines": pipes, "graphs": graphs(rows), "cards": cards(rows), "counts": counts,
             "hide_after_min": HIDE_S / 60, "scopes": [os.path.basename(d) for d in scopes()]}
@@ -387,7 +429,7 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("cmd", nargs="?", default="serve", choices=["serve", "session", "scope"])
+    ap.add_argument("cmd", nargs="?", default="serve", choices=["serve", "session", "scope", "notify"])
     ap.add_argument("op", nargs="?", choices=["add", "remove", "list"], default="list")
     ap.add_argument("dir", nargs="?", default=os.getcwd())
     ap.add_argument("--port", type=int, default=8765)
@@ -395,6 +437,12 @@ if __name__ == "__main__":
     args = ap.parse_args()
     if args.cmd == "scope":
         print("\n".join(scopes() if args.op == "list" else edit_scopes(args.op, args.dir)) or "(none)")
+        sys.exit(0)
+    if args.cmd == "notify":  # never fail the hook: a bad payload just isn't recorded
+        try:
+            notify(json.load(sys.stdin))
+        except (OSError, ValueError, AttributeError):
+            pass
         sys.exit(0)
     if args.cmd == "session":
         sid = latest_session(args.cwd)

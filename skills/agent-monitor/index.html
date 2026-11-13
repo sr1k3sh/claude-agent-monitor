@@ -43,6 +43,8 @@ h2{margin:4px 0 12px} h2 small{font-size:12px;color:var(--muted);font-weight:400
 .node.waiting rect.box,.node.stalled rect.box{stroke:var(--wait);stroke-dasharray:none;animation:blink 1.4s ease-in-out infinite}
 .node.waiting .ring,.node.stalled .ring{stroke:var(--wait);stroke-dasharray:4 6}
 @keyframes blink{50%{fill:color-mix(in srgb,var(--wait) 16%,var(--card))}}
+.node .pause rect{fill:var(--wait)}
+.node.hub.waiting .title,.now .wait b{fill:var(--wait);color:var(--wait)}
 .node .bars rect{fill:var(--run);opacity:.85;transform-box:fill-box;transform-origin:bottom;animation:eq 1s ease-in-out infinite}
 .node .bars rect:nth-child(2){animation-delay:.2s}.node .bars rect:nth-child(3){animation-delay:.4s}
 @keyframes eq{50%{transform:scaleY(.3)}}
@@ -54,7 +56,8 @@ h2{margin:4px 0 12px} h2 small{font-size:12px;color:var(--muted);font-weight:400
 
 /* agent cards */
 .card{background:var(--card);border:1px solid var(--line);border-left:5px solid #888;border-radius:8px;margin:10px 0;padding:10px 14px}
-.card.running,.card.active{border-left-color:var(--run)} .card.idle{border-left-color:var(--edge)}
+.card.running,.card.active{border-left-color:var(--run)} .card.waiting{border-left-color:var(--wait)}
+.ask{color:var(--wait);font-weight:600;margin-left:6px} .card.idle{border-left-color:var(--edge)}
 .group{font-size:14px;margin:18px 0 4px} .group small{color:var(--muted);font-weight:400}
 .cost{color:var(--done);font-weight:600} .card.stalled{border-left-color:var(--stall)} .card.done{border-left-color:var(--done)}
 summary{cursor:pointer} summary small{display:block;color:var(--muted);margin-top:3px}
@@ -69,6 +72,7 @@ li.text{color:var(--text)} li.error{color:var(--err)}
 .tab.sel{border-color:var(--run);background:color-mix(in srgb,var(--run) 14%,var(--card))}
 .tab .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--muted);margin-right:6px;vertical-align:1px}
 .tab.live .dot{background:var(--run);animation:glow 1.6s infinite}
+.tab.waiting{border-color:var(--wait)} .tab.waiting .dot{background:var(--wait);animation:none}
 .ptitle-sub{font-weight:400;color:var(--muted);font-size:12px;margin-left:6px}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important}}
 </style>
@@ -105,7 +109,7 @@ const el = (tag, attrs = {}, parent) => {
 const fmt = s => s >= 3600 ? `${Math.floor(s / 3600)}h${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}m`
   : `${Math.floor(s / 60)}m${String(Math.floor(s % 60)).padStart(2, '0')}s`;
 const cut = (t, n) => t.length > n ? t.slice(0, n - 1) + '…' : t;
-const STATE = {running: 'running', 'stalled?': 'stalled', done: 'done'};
+const STATE = {running: 'running', 'stalled?': 'stalled', done: 'done', waiting: 'waiting'};
 
 function subText(n, extra = 0) {
   const usd = n.usd ? ` · $${n.usd.toFixed(2)}` : '';
@@ -157,7 +161,7 @@ function layoutAuto(g) {
   cols.forEach((col, ci) => {
     const top = PAD_Y + (rows - col.length) * ROW_H / 2;
     byCol[ci] = col.map((a, ri) => {
-      const n = {label: a.desc, state: STATE[a.status] || 'pending', tools: a.tools, elapsed: a.elapsed,
+      const n = {label: a.desc, state: STATE[a.status] || 'pending', ask: a.note, tools: a.tools, elapsed: a.elapsed,
                  usd: a.usd, last: a.last, type: a.type, t0: a.t0, t1: a.t1};
       const b = {x: x0 + ci * (W + GX), y: top + ri * ROW_H, n};
       boxes.push(b);
@@ -173,7 +177,7 @@ function layoutAuto(g) {
     });
   });
   const firsts = (byCol[0] || []).map(b => [b, b.n]);
-  return finish(boxes, edges, [], g.live ? 'running' : 'done', firsts, x0 + cols.length * (W + GX), PAD_Y + rows * ROW_H);
+  return finish(boxes, edges, [], g.waiting ? 'waiting' : g.live ? 'running' : 'done', firsts, x0 + cols.length * (W + GX), PAD_Y + rows * ROW_H);
 }
 
 function finish(boxes, edges, labels, hubState, firsts, width, height) {
@@ -202,7 +206,7 @@ function draw(L) {
   const hg = el('g', {class: `node hub ${L.hub.state}`, transform: `translate(${L.hub.x},${L.hub.y})`}, ng);
   el('rect', {class: 'box', width: HUB_W, height: H, rx: 33}, hg);
   el('text', {x: HUB_W / 2, y: H / 2 - 2, class: 'title', 'text-anchor': 'middle'}, hg).textContent = '◎ Orchestrator';
-  el('text', {x: HUB_W / 2, y: H / 2 + 14, class: 'sub', 'text-anchor': 'middle'}, hg).textContent = 'main session';
+  el('text', {x: HUB_W / 2, y: H / 2 + 14, class: 'sub', 'text-anchor': 'middle'}, hg).textContent = L.hub.state === 'waiting' && L.hubNote ? '⏸ waiting on you' : 'main session';
   drawn = [];
   L.boxes.forEach(({x, y, n}) => {
     const g = el('g', {class: `node ${n.state}`, transform: `translate(${x},${y})`}, ng);
@@ -214,6 +218,10 @@ function draw(L) {
     if (n.state === 'running') {
       const bars = el('g', {class: 'bars', transform: `translate(${W - 24},8)`}, g);  // top-right, clear of the sub text
       [0, 6, 12].forEach(bx => el('rect', {x: bx, y: 0, width: 4, height: 12, rx: 1}, bars));
+    }
+    if (n.state === 'waiting') {  // paused, not loading: the agent is blocked until you answer
+      const pz = el('g', {class: 'pause', transform: `translate(${W - 22},8)`}, g);
+      [0, 7].forEach(bx => el('rect', {x: bx, y: 0, width: 4, height: 12, rx: 1}, pz));
     }
     el('text', {x: 46, y: H / 2 - 4, class: 'title'}, g).textContent = cut(n.label, 17);
     const sub = el('text', {x: 46, y: H / 2 + 14, class: 'sub'}, g);
@@ -229,7 +237,7 @@ function tick() {  // live clocks on running nodes without re-rendering (keeps a
 
 function views(s) {
   // one view per session; the hand-written pipeline replaces the auto graph for its session
-  const v = s.graphs.map(g => ({id: g.session, live: g.live, usd: g.usd, title: g.title, project: g.project, g}));
+  const v = s.graphs.map(g => ({id: g.session, live: g.live, waiting: g.waiting, usd: g.usd, title: g.title, project: g.project, g}));
   for (const p of s.pipelines) {
     const hit = v.find(x => x.id === p.session);
     if (hit) Object.assign(hit, {p, title: p.title});
@@ -245,12 +253,12 @@ function showGraph(s) {
   const tabs = document.getElementById('tabs');
   tabs.replaceChildren(...vs.map(v => {
     const b = document.createElement('button');
-    b.className = `tab${v.id === selected ? ' sel' : ''}${v.live ? ' live' : ''}`;
+    b.className = `tab${v.id === selected ? ' sel' : ''}${v.live ? ' live' : ''}${v.waiting ? ' waiting' : ''}`;
     b.setAttribute('role', 'tab');
     b.setAttribute('aria-selected', v.id === selected);
     b.title = `${v.title} (${v.project} · ${v.id})`;
     b.innerHTML = '<span class="dot"></span>';
-    b.append(`${cut(v.title, 38)}${v.usd ? ` · $${v.usd.toFixed(2)}` : ''}`);
+    b.append(`${v.waiting ? '⏸ ' : ''}${cut(v.title, 38)}${v.usd ? ` · $${v.usd.toFixed(2)}` : ''}`);
     b.onclick = () => { selected = v.id; try { localStorage.setItem('agentmon.session', v.id); } catch (e) {} sig = ''; showGraph(last); };
     return b;
   }));
@@ -258,21 +266,33 @@ function showGraph(s) {
   document.getElementById('ptitle').textContent = cut(v.title, 90);
   document.getElementById('psub').textContent = `${v.project} · s:${v.id}${v.p ? ' · pipeline' : ' · auto'}`;
   const data = v.p ? v.p.lanes.flatMap(l => l.stages) : v.g.nodes;
-  const newSig = selected + JSON.stringify(data.map(n => [n.label || n.desc, n.state || n.status, n.note]));
-  if (newSig !== sig) { sig = newSig; draw(v.p ? layoutPipeline(v.p) : layoutAuto(v.g)); }
+  const hubNote = v.g ? v.g.note : '';
+  const newSig = selected + hubNote + JSON.stringify(data.map(n => [n.label || n.desc, n.state || n.status, n.note]));
+  if (newSig !== sig) {
+    sig = newSig;
+    const L = v.p ? layoutPipeline(v.p) : layoutAuto(v.g);
+    if (hubNote) L.hub.state = 'waiting';
+    L.hubNote = hubNote;
+    draw(L);
+  }
   else {
     const fresh = v.p ? data : v.g.nodes.map(a => ({tools: a.tools, elapsed: a.elapsed, usd: a.usd, last: a.last}));
     drawn.forEach((x, i) => Object.assign(x.n, fresh[i]));
     tick();
   }
   const now = document.getElementById('now');
-  now.replaceChildren(...drawn.filter(x => x.n.state === 'running').map(({n}) => {
+  const line = (cls, head, text) => {
     const d = document.createElement('div');
     const b = document.createElement('b');
-    b.textContent = `▶ ${cut(n.label, 40)}: `;
-    d.append(b, n.last || '…');
+    d.className = cls;
+    b.textContent = head;
+    d.append(b, text);
     return d;
-  }));
+  };
+  now.replaceChildren(
+    ...(hubNote ? [line('wait', '⏸ Orchestrator: ', `waiting on you — ${hubNote}`)] : []),
+    ...drawn.filter(x => x.n.state === 'waiting').map(({n}) => line('wait', `⏸ ${cut(n.label, 40)}: `, `waiting on you${n.ask || n.note ? ` — ${n.ask || n.note}` : ''}`)),
+    ...drawn.filter(x => x.n.state === 'running').map(({n}) => line('', `▶ ${cut(n.label, 40)}: `, n.last || '…')));
 }
 
 function updateCards(htmlStr) {
@@ -284,7 +304,7 @@ function updateCards(htmlStr) {
   box.innerHTML = htmlStr;
   box.querySelectorAll('details').forEach(d => {
     const id = d.dataset.id;
-    d.open = opened.has(id) || (!closed.has(id) && ['running', 'active'].includes(d.dataset.status));
+    d.open = opened.has(id) || (!closed.has(id) && ['running', 'active', 'waiting'].includes(d.dataset.status));
     if (!seenCards.has(id)) { d.classList.add('fresh'); seenCards.add(id); }
   });
 }
@@ -296,7 +316,8 @@ async function poll() {
     last = s;
     const c = s.counts;
     document.getElementById('counts').textContent =
-      `${s.scopes.join(', ') || 'no watched repos'} · ${c.active} active sessions · ${c.running} running agents · ${c['stalled?']} stalled? · ${c.done} done · $${c.usd.toFixed(2)} · hides ${s.hide_after_min}m after last activity · live`;
+      `${s.scopes.join(', ') || 'no watched repos'} · ${c.waiting} waiting on you · ${c.active} active sessions · ${c.running} running agents · ${c['stalled?']} stalled? · ${c.done} done · $${c.usd.toFixed(2)} · hides ${s.hide_after_min}m after last activity · live`;
+    document.title = c.waiting ? `⏸ (${c.waiting}) waiting · Agent Monitor` : 'Agent Monitor';
     showGraph(s);
     updateCards(s.cards);
   } catch (e) {
