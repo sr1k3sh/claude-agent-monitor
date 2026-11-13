@@ -40,7 +40,7 @@ class AgentMonitorTests(unittest.TestCase):
         self.root, self.home = base / "projects", base / "home"
         sess = self.root / "-proj" / "abcdef12-0000-0000-0000-000000000000"
         write_jsonl(self.root / "-proj" / "abcdef12-0000-0000-0000-000000000000.jsonl", [
-            {"type": "user", "timestamp": "2026-11-13T00:00:00Z", "message": {"content": "replace the library"}},
+            {"type": "user", "timestamp": "2026-11-13T00:00:00Z", "message": {"content": "add offline sync"}},
         ])
         # the same message id twice = one streamed response split over two records
         write_jsonl(sess / "subagents" / "agent-a1.jsonl", [
@@ -88,7 +88,7 @@ class AgentMonitorTests(unittest.TestCase):
     def test_graph_groups_subagents_under_their_session(self):
         s = self.m.state()
         g = next(g for g in s["graphs"] if g["session"] == "abcdef12")
-        self.assertEqual(g["title"], "replace the library")
+        self.assertEqual(g["title"], "add offline sync")
         self.assertEqual([n["desc"] for n in g["nodes"]], ["Plan the swap", "Execute Android"])
         self.assertTrue(g["live"])  # a2 has no finished flag and was just written
 
@@ -99,7 +99,7 @@ class AgentMonitorTests(unittest.TestCase):
 
     def test_only_scope_repo_and_its_worktrees(self):
         titles = {a["desc"] for a in self.m.agents() if a["kind"] == "main"}
-        self.assertEqual(titles, {"replace the library", "worktree work"})
+        self.assertEqual(titles, {"add offline sync", "worktree work"})
 
     def test_session_without_agents_shows_only_while_active(self):
         s = self.m.state()
@@ -125,7 +125,7 @@ class AgentMonitorTests(unittest.TestCase):
         s = self.m.state()
         self.assertNotIn("abcdef12", [g["session"] for g in s["graphs"]])
         self.assertEqual(s["pipelines"], [])
-        self.assertNotIn("replace the library", s["cards"])
+        self.assertNotIn("add offline sync", s["cards"])
 
     def test_scope_file_add_remove(self):
         del os.environ["AGENT_MONITOR_SCOPE"]

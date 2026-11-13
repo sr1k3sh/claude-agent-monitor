@@ -33,7 +33,7 @@ Optional; only for the session you run it in. Do it once when you begin orchestr
 ```json
 {
   "session": "<session id>",
-  "title": "PROJ-123 — replace the background location library",
+  "title": "PROJ-42 — offline sync for the mobile app",
   "lanes": [
     {"name": "Discovery", "stages": [
       {"label": "Research", "match": "Research"},
