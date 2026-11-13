@@ -148,6 +148,7 @@ def parse(path):
 
 def _parse(path):
     events, tools, first, last, errors, asking = [], 0, None, None, 0, {}
+    title = {}  # Claude Code's session title records: ai-title (auto), custom-title (/rename)
     turns, queue = [], []  # one dict per question you asked; queue = prompts typed while Claude was busy
 
     def start_turn(label, ts):
@@ -168,7 +169,9 @@ def _parse(path):
                 last = ts
             msg = r.get("message") or {}
             kind = r.get("type")
-            if kind == "queue-operation":
+            if kind in ("ai-title", "custom-title"):
+                title[kind] = r.get("aiTitle") or r.get("customTitle") or title.get(kind)
+            elif kind == "queue-operation":
                 op, qc = r.get("operation"), r.get("content")
                 label = prompt_label({"message": {"content": qc}}) if isinstance(qc, str) else None
                 if op == "enqueue":
@@ -228,7 +231,11 @@ def _parse(path):
                     errors += 1
                     events.append((ts, "error", short(c.get("content"), 200)))
     tok["unpriced"] = sorted(m for m in tok["unpriced"] if m and m != "<synthetic>")
-    return events, tools, errors, first, last, tok, bool(asking), turns, [q for q in queue if q]
+    return events, tools, errors, first, last, tok, bool(asking), turns, [q for q in queue if q], title.get("custom-title") or title.get("ai-title")
+
+
+# shortcut: common built-in commands that say nothing about the task; extend if another shows up as a title
+HOUSEKEEPING = {"/clear", "/compact", "/resume", "/model", "/login", "/config", "/plugin", "/status", "/cost", "/context"}
 
 
 def first_prompt(path):
@@ -239,11 +246,9 @@ def first_prompt(path):
                 r = json.loads(line)
             except ValueError:
                 continue
-            c = (r.get("message") or {}).get("content") if r.get("type") == "user" else None
-            texts = [c] if isinstance(c, str) else [x.get("text", "") for x in c or [] if isinstance(x, dict) and x.get("type") == "text"]
-            for t in texts:
-                if t.strip() and not t.lstrip().startswith("<"):
-                    return short(t, 90)
+            label = prompt_label(r) if r.get("type") == "user" else None
+            if label and label.split()[0] not in HOUSEKEEPING:
+                return label
     return ""
 
 
@@ -265,7 +270,7 @@ _titles = {}
 
 
 def row(p, kind, meta, status, note=""):
-    events, tools, errors, first, last, tok, _, turns, queued = parse(p)
+    events, tools, errors, first, last, tok, _, turns, queued, _ = parse(p)
     a, b = iso(first), iso(last)
     mtime = os.path.getmtime(p)
     live = status in ("running", "active", "waiting")
@@ -334,7 +339,8 @@ def agents():
             elif flag_t > t and not any(a["status"] == "waiting" for a in subs):  # nothing in the session wrote since
                 note = flag_msg
             status = "waiting" if note else "active" if now - mtime < ACTIVE_S else "idle"
-            out.append(row(main, "main", {"description": _titles[main], "agentType": "main session"}, status, note))
+            title = parse(main)[9] or _titles[main]  # the session title Claude Code shows, else your first message
+            out.append(row(main, "main", {"description": title, "agentType": "main session"}, status, note))
         out += subs
     order = {"waiting": 0, "active": 1, "running": 2, "stalled?": 3, "idle": 4, "done": 5}
     return sorted(out, key=lambda x: (order[x["status"]], -x["mtime"]))
@@ -416,7 +422,12 @@ def cards(rows):
         if group:
             usd = sum(a["tok"]["usd"] for a in group)
             out.append(f'<h3 class="group">{title} <small>{len(group)} · ${usd:.2f}</small></h3>' + "".join(map(card, group)))
-    return "".join(out) or "<p>No live sessions in the watched repos. Sessions show here while they or their agents are working.</p>"
+    return "".join(out)
+
+
+def cards_by_session(rows):
+    """Cards per session, so the page lists only the selected tab's session and its agents."""
+    return {sid: cards([a for a in rows if a["session"] == sid]) for sid in {a["session"] for a in rows}}
 
 
 MAX_TURNS = 6
@@ -485,7 +496,7 @@ def state():
     pipes = [p for p in pipes if p["session"] in live]
     counts = {s: sum(a["status"] == s for a in rows) for s in ("waiting", "active", "running", "stalled?", "idle", "done")}
     counts["usd"] = round(sum(a["tok"]["usd"] for a in rows), 2)
-    return {"pipelines": pipes, "graphs": graphs(rows), "cards": cards(rows), "counts": counts,
+    return {"pipelines": pipes, "graphs": graphs(rows), "cards": cards_by_session(rows), "counts": counts,
             "hide_after_min": HIDE_S / 60, "scopes": [os.path.basename(d) for d in scopes()]}
 
 

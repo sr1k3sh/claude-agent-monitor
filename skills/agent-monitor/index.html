@@ -284,7 +284,7 @@ function views(s) {
 
 function showGraph(s) {
   const vs = views(s);
-  if (!vs.length) { document.getElementById('tabs').replaceChildren(); document.getElementById('graph').replaceChildren(); document.getElementById('now').replaceChildren(); document.getElementById('psub').textContent = ''; drawn = []; sig = ''; document.getElementById('ptitle').textContent = 'No live sessions'; return; }
+  if (!vs.length) { document.getElementById('tabs').replaceChildren(); document.getElementById('graph').replaceChildren(); document.getElementById('now').replaceChildren(); document.getElementById('psub').textContent = ''; drawn = []; sig = ''; document.getElementById('ptitle').textContent = 'No live sessions'; updateCards('<p>No live sessions in the watched repos. Sessions show here while they or their agents are working.</p>'); return; }
   if (!vs.some(v => v.id === selected)) selected = vs[0].id;
   const tabs = document.getElementById('tabs');
   tabs.replaceChildren(...vs.map(v => {
@@ -299,6 +299,7 @@ function showGraph(s) {
     return b;
   }));
   const v = vs.find(x => x.id === selected);
+  updateCards(s.cards[selected] || '');
   document.getElementById('ptitle').textContent = cut(v.title, 90);
   document.getElementById('psub').textContent = `${v.project} · s:${v.id}${v.p ? ' · pipeline' : ' · auto'}`;
   const turns = !v.p && v.g.turns && v.g.turns.length;
@@ -356,7 +357,7 @@ async function poll() {
       `${s.scopes.join(', ') || 'no watched repos'} · ${c.waiting} waiting on you · ${c.active} active sessions · ${c.running} running agents · ${c['stalled?']} stalled? · ${c.done} done · $${c.usd.toFixed(2)} · hides ${s.hide_after_min}m after last activity · live`;
     document.title = c.waiting ? `⏸ (${c.waiting}) waiting · Agent Monitor` : 'Agent Monitor';
     showGraph(s);
-    updateCards(s.cards);
+    if (navigator.setAppBadge) (c.waiting ? navigator.setAppBadge(c.waiting) : navigator.clearAppBadge()).catch(() => {});  // Dock icon badge
   } catch (e) {
     document.getElementById('counts').textContent = 'server unreachable — retrying…';
   }

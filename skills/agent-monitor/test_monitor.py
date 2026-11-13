@@ -30,6 +30,10 @@ def write_jsonl(path, records):
     path.write_text("".join(json.dumps(r) + "\n" for r in records))
 
 
+def all_cards(s):
+    return "".join(s["cards"].values())
+
+
 MTOK = {"input_tokens": 1_000_000, "output_tokens": 0}
 
 
@@ -103,12 +107,12 @@ class AgentMonitorTests(unittest.TestCase):
 
     def test_session_without_agents_shows_only_while_active(self):
         s = self.m.state()
-        self.assertIn("worktree work", s["cards"])  # just written: a live chat
+        self.assertIn("worktree work", all_cards(s))  # just written: a live chat
         self.assertIn("77777777", [g["session"] for g in s["graphs"]])
         old = time.time() - 5 * 60
         f = self.root / "-proj-worktrees-x" / "77777777-0000-0000-0000-000000000000.jsonl"
         os.utime(f, (old, old))
-        self.assertNotIn("worktree work", self.m.state()["cards"])
+        self.assertNotIn("worktree work", all_cards(self.m.state()))
 
     def test_idle_session_is_hidden(self):
         old = time.time() - 31 * 60
@@ -125,7 +129,7 @@ class AgentMonitorTests(unittest.TestCase):
         s = self.m.state()
         self.assertNotIn("abcdef12", [g["session"] for g in s["graphs"]])
         self.assertEqual(s["pipelines"], [])
-        self.assertNotIn("add offline sync", s["cards"])
+        self.assertNotIn("add offline sync", all_cards(s))
 
     def test_scope_file_add_remove(self):
         del os.environ["AGENT_MONITOR_SCOPE"]
@@ -133,9 +137,9 @@ class AgentMonitorTests(unittest.TestCase):
             self.assertEqual(self.m.scopes(), [])
             self.assertEqual(self.m.edit_scopes("add", "/proj"), ["/proj"])
             self.assertEqual(self.m.edit_scopes("add", "/other"), ["/other", "/proj"])
-            self.assertIn("worktree work", self.m.state()["cards"])
+            self.assertIn("worktree work", all_cards(self.m.state()))
             self.assertEqual(self.m.edit_scopes("remove", "/proj"), ["/other"])
-            self.assertNotIn("worktree work", self.m.state()["cards"])
+            self.assertNotIn("worktree work", all_cards(self.m.state()))
         finally:
             os.environ["AGENT_MONITOR_SCOPE"] = "/proj"
 
@@ -204,6 +208,18 @@ class AgentMonitorTests(unittest.TestCase):
         [t] = g["turns"]
         self.assertEqual([a["desc"] for a in t["agents"]], ["Plan the swap", "Execute Android"])
         self.assertEqual(t["state"], "running")
+
+    def test_title_record_and_cards_per_session(self):
+        f = self.root / "-proj" / "abcdef12-0000-0000-0000-000000000000.jsonl"
+        with open(f, "a") as fh:
+            fh.write(json.dumps({"type": "ai-title", "aiTitle": "Offline sync"}) + "\n")
+        s = self.m.state()
+        self.assertEqual(next(g for g in s["graphs"] if g["session"] == "abcdef12")["title"], "Offline sync")
+        self.assertIn("Execute Android", s["cards"]["abcdef12"])
+        self.assertNotIn("Execute Android", s["cards"]["77777777"])
+        with open(f, "a") as fh:  # /rename beats the automatic title
+            fh.write(json.dumps({"type": "custom-title", "customTitle": "My name"}) + "\n")
+        self.assertIn("My name", self.m.state()["cards"]["abcdef12"])
 
     def test_latest_session_for_project_dir(self):
         self.assertEqual(self.m.project_dir("/a/b.c"), "-a-b-c")
