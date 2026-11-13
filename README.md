@@ -7,6 +7,14 @@ A Claude Code plugin: a live local dashboard (http://127.0.0.1:8765) of the Clau
 - Live tool calls, errors, tokens and estimated cost for every session and agent.
 - Only watched repos (plus their worktrees). Finished, idle or cleared sessions drop off on their own.
 
+![Dashboard: a tracked task with stage lanes, the QA agent running](docs/demo.png)
+
+Sessions that weren't tracked get an automatic graph. Agents that ran at the same time share a column:
+
+![Automatic graph: two agents running in parallel after an investigation agent](docs/demo-parallel.png)
+
+*Screenshots use made-up demo data.*
+
 It only reads Claude Code's transcripts in `~/.claude/projects/` and keeps its own state in `~/.claude/agent-monitor/`. It uses only the Python standard library and listens on `127.0.0.1`.
 
 ## Install

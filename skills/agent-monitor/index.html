@@ -189,7 +189,8 @@ function draw(L) {
   const svg = document.getElementById('graph');
   svg.replaceChildren();
   svg.setAttribute('viewBox', `0 0 ${L.width} ${L.height}`);
-  svg.style.minWidth = `${Math.max(600, L.width * 0.8)}px`;
+  svg.style.minWidth = `${Math.min(L.width, Math.max(600, L.width * 0.8))}px`;
+  svg.style.maxWidth = `${L.width}px`;  // never upscale a small graph past its natural size
   const eg = el('g', {}, svg), pg = el('g', {}, svg), ng = el('g', {}, svg);
   L.labels.forEach(([x, y, t]) => { el('text', {x, y, class: 'lane-label'}, svg).textContent = t; });
   L.edges.forEach(([d, from, to]) => {
@@ -211,7 +212,7 @@ function draw(L) {
     el('circle', {class: 'ring', cx: 26, cy: H / 2, r: 10}, g);
     if (n.state === 'done') el('path', {class: 'check', d: `M21,${H / 2} l4,4 l7,-8`}, g);
     if (n.state === 'running') {
-      const bars = el('g', {class: 'bars', transform: `translate(${W - 24},${H - 22})`}, g);
+      const bars = el('g', {class: 'bars', transform: `translate(${W - 24},8)`}, g);  // top-right, clear of the sub text
       [0, 6, 12].forEach(bx => el('rect', {x: bx, y: 0, width: 4, height: 12, rx: 1}, bars));
     }
     el('text', {x: 46, y: H / 2 - 4, class: 'title'}, g).textContent = cut(n.label, 17);
