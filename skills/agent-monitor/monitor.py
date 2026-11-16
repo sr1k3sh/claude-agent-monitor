@@ -14,7 +14,7 @@ every 2s and updates in place (keeps animations).
   monitor.py session [--cwd DIR]            print the newest main session id for a project dir
   monitor.py notify                         Notification hook: mark the stdin session as waiting on the user
 """
-import argparse, glob, html, json, os, re, subprocess, sys, time
+import argparse, glob, html, json, os, re, statistics, subprocess, sys, time
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -57,6 +57,7 @@ def edit_scopes(op, path):
         json.dump(new, f, indent=2)
     return new
 STALE_S = 600  # running agent with no writes for 10 min is shown as "stalled?"
+HIST_MAX, HIST_TTL, MIN_RUNS = 400, 60, 3  # estimates: newest 400 agent transcripts, rescanned each minute, 3+ runs
 ASK_TOOLS = {"AskUserQuestion", "ExitPlanMode"}  # a tool_use of these without its result = waiting on the user
 WAIT_DIR = os.path.join(HOME, "waiting")
 
@@ -331,6 +332,7 @@ def row(p, kind, meta, status, note=""):
     a, b = iso(first), iso(last)
     mtime = os.path.getmtime(p)
     live = status in ("running", "active", "waiting")
+    act = next((iso(e[0]).timestamp() for e in reversed(events) if e[0]), mtime)  # last tool call / text / error
     return {
         "id": os.path.basename(p).removeprefix("agent-").removesuffix(".jsonl"),
         "kind": kind,
@@ -343,7 +345,7 @@ def row(p, kind, meta, status, note=""):
         "elapsed": int(((time.time() if live else b.timestamp()) - a.timestamp())) if a and b else 0,
         "idle": int(time.time() - mtime),
         "start": a.astimezone().strftime("%m-%d %H:%M") if a else "",
-        "events": events[-25:], "mtime": mtime,
+        "events": events[-25:], "mtime": mtime, "act": act,
         "t0": a.timestamp() if a else mtime, "t1": time.time() if live else (b.timestamp() if b else mtime),
         "last": next((e[2] for e in reversed(events) if e[1] in ("tool", "text")), ""),  # what it is doing now
         "path": p,  # server side only: graphs() and cards() pick the fields they send
@@ -361,6 +363,14 @@ def scoped_dirs():
     return sorted(out)
 
 
+def read_meta(p):
+    try:
+        with open(p[: -len(".jsonl")] + ".meta.json") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
 def agents():
     """Rows for every session in scope that wrote within HIDE_S, plus all of those sessions' subagents."""
     now, out, last = time.time(), [], {}
@@ -376,12 +386,7 @@ def agents():
             continue
         subs = []
         for p in glob.glob(os.path.join(d, sid, "subagents", "agent-*.jsonl")):
-            meta = {}
-            try:
-                with open(p[: -len(".jsonl")] + ".meta.json") as f:
-                    meta = json.load(f)
-            except (OSError, ValueError):
-                pass
+            meta = read_meta(p)
             mtime = os.path.getmtime(p)
             # a prompt newer than this agent's last write: it is the one blocked on the user (or paused behind it)
             status = ("done" if meta.get("finished") else "waiting" if flag_t > mtime
@@ -408,19 +413,80 @@ def fmt(s):
     return f"{s // 3600}h{s % 3600 // 60:02d}m" if s >= 3600 else f"{s // 60}m{s % 60:02d}s"
 
 
-def pipelines(rows):
-    """Every task pipeline in $AGENT_MONITOR_HOME/pipelines/; a bad file is skipped, not fatal."""
+def specs():
+    """Every task pipeline file in $AGENT_MONITOR_HOME/pipelines/; a bad file is skipped, not fatal."""
     out = []
     for path in sorted(glob.glob(os.path.join(HOME, "pipelines", "*.json"))):
         try:
             with open(path) as f:
-                out.append(pipeline(rows, json.load(f)))
-        except (OSError, ValueError, KeyError, TypeError):
+                out.append(json.load(f))
+        except (OSError, ValueError):
             continue
     return out
 
 
-def pipeline(rows, spec):
+def pipelines(rows, hist=None):
+    out = []
+    for spec in specs():
+        try:
+            out.append(pipeline(rows, spec, hist or {}))
+        except (KeyError, TypeError, AttributeError):
+            continue
+    return out
+
+
+def role(desc, typ, stage=None):
+    """What an agent's run is compared with: its pipeline stage, else its subagent type, else its task's first word."""
+    if stage:
+        return f"{stage} stage"
+    if typ and typ != "?":
+        return typ
+    return (desc.split() or ["?"])[0].lower()
+
+
+def guess(hist, r):
+    """Median run time (s) of finished agents with the same role; None under MIN_RUNS runs."""
+    d = hist.get(r, [])
+    return {"role": r, "est": int(statistics.median(d)) if len(d) >= MIN_RUNS else None, "runs": len(d)}
+
+
+def _span(path):
+    first = last = None
+    with open(path, errors="replace") as f:
+        for line in f:
+            m = re.search(r'"timestamp":\s*"([^"]+)"', line)
+            if m:
+                first, last = first or m.group(1), m.group(1)
+    return (iso(last) - iso(first)).total_seconds() if first else 0
+
+
+_hist = {"t": 0, "v": {}}
+
+
+def history():
+    """role -> run times (s) of finished subagents in the watched repos (newest HIST_MAX transcripts, any age)."""
+    if time.time() - _hist["t"] < HIST_TTL:
+        return _hist["v"]
+    match = {}  # session -> [(match, stage label)], as pipeline() matches them
+    for spec in specs():
+        for lane in spec.get("lanes", []) if isinstance(spec, dict) else []:
+            for s in lane.get("stages", []):
+                if s.get("match") and s.get("label"):
+                    match.setdefault(str(spec.get("session", ""))[:8], []).append((s["match"].lower(), s["label"]))
+    files = [p for d in scoped_dirs() for p in glob.glob(os.path.join(d, "*", "subagents", "agent-*.jsonl"))]
+    out = {}
+    for p in sorted(files, key=os.path.getmtime, reverse=True)[:HIST_MAX]:
+        meta = read_meta(p)
+        dur = meta.get("finished") and parse(p, _span)  # a finished transcript never changes: parsed once
+        if dur and dur > 0:
+            desc = str(meta.get("description", ""))
+            stage = next((lbl for m, lbl in match.get(p.split("/")[-3][:8], []) if m in desc.lower()), None)
+            out.setdefault(role(desc, meta.get("agentType"), stage), []).append(dur)
+    _hist.update(t=time.time(), v=out)
+    return out
+
+
+def pipeline(rows, spec, hist={}):
     """Stage graph for one task; a stage's state comes from that session's agents whose description contains `match`."""
     sid = spec.get("session", "")[:8]
     rows = [a for a in rows if not sid or a["session"] == sid]
@@ -432,18 +498,20 @@ def pipeline(rows, spec):
             node = {"label": s["label"], "id": hits[-1]["id"] if hits else "", "ids": [a["id"] for a in hits], "tools": sum(a["tools"] for a in hits), "elapsed": 0, "last": "",
                     "usd": round(sum(a["tok"]["usd"] for a in hits), 2)}
             if s.get("manual"):
-                node.update(state=s["manual"], note=s.get("note", ""))
+                node.update(state=s["manual"], note=s.get("note", ""), manual=True)
             elif any(a["status"] != "done" for a in hits):
                 live = [a for a in hits if a["status"] != "done"]
                 node.update(state="waiting" if any(a["status"] == "waiting" for a in live)
                             else "stalled" if all(a["status"] == "stalled?" for a in live) else "running",
                             ask=next((a["note"] for a in live if a["note"]), ""),
-                            elapsed=max(a["elapsed"] for a in live),
+                            elapsed=max(a["elapsed"] for a in live), act=max(a["act"] for a in live),
                             last=next((e[2] for a in live for e in reversed(a["events"]) if e[1] == "tool"), ""))
             elif hits:
                 node.update(state="done", elapsed=sum(a["elapsed"] for a in hits))
             else:
                 node.update(state="pending")
+            if not s.get("manual"):
+                node.update(guess(hist, role("", "", s["label"])))
             stages.append(node)
         lanes.append({"name": lane["name"], "stages": stages})
     return {"title": spec.get("title", "Pipeline"), "session": sid, "lanes": lanes}
@@ -522,7 +590,17 @@ LANE_ORDER = {"running": 0, "waiting": 1, "done": 2, "pending": 3}
 def stage(a):
     """A board stage for one agent node."""
     return {"label": a["desc"], "state": a["status"].rstrip("?"), "ask": a["note"]} | {
-        k: a[k] for k in ("id", "desc", "type", "last", "elapsed", "usd", "tools", "errors")}
+        k: a.get(k) for k in ("id", "desc", "type", "last", "elapsed", "usd", "tools", "errors", "act", "role", "est", "runs")}
+
+
+def lane_eta(stages, seq):
+    """Seconds left from the medians: pipeline stages run one after another (sum), a question's agents side by
+    side (max). None when a step still to do has no estimate."""
+    rest = [s for s in stages if s["state"] != "done" and not s.get("manual")]
+    if not rest or any(s.get("est") is None for s in rest):
+        return None
+    left = [max(0, s["est"] - (s.get("elapsed") or 0)) for s in rest]
+    return sum(left) if seq else max(left)
 
 
 def lanes(nodes, turns, pipe=None):
@@ -534,28 +612,29 @@ def lanes(nodes, turns, pipe=None):
             ids = {i for s in lane["stages"] for i in s["ids"] if i in by_id}
             stages = [s | {k: by_id[s["id"]][k] for k in ("desc", "type", "errors")} if s["id"] in by_id else s
                       for s in lane["stages"]]
-            rows.append((lane["name"], stages, [by_id[i] for i in ids], ""))
+            rows.append((lane["name"], stages, [by_id[i] for i in ids], "", True))
             claimed |= ids
     else:
         for t in turns:
             if t["agents"]:
-                rows.append((t["label"], [stage(a) for a in t["agents"]], t["agents"], t["state"]))
+                rows.append((t["label"], [stage(a) for a in t["agents"]], t["agents"], t["state"], False))
                 claimed |= {a["id"] for a in t["agents"]}
     rest = [a for a in nodes if a["id"] not in claimed]
     if rest:
-        rows.append(("Other", [stage(a) for a in rest], rest, ""))
+        rows.append(("Other", [stage(a) for a in rest], rest, "", False))
     out = []
-    for name, stages, ags, turn_state in rows:
+    for name, stages, ags, turn_state, seq in rows:
         sts = {s["state"] for s in stages} | {turn_state}  # a question still being worked on keeps its lane live
         state = ("waiting" if "waiting" in sts else "running" if sts & {"running", "stalled"}
                  else "pending" if sts <= {"pending", ""} else "done")
         end = max((a["t1"] for a in ags), default=0)
         out.append({"name": name, "state": state, "stages": stages, "usd": round(sum(a["usd"] for a in ags), 2),
-                    "elapsed": int(end - min(a["t0"] for a in ags)) if ags else 0, "end": end})
+                    "elapsed": int(end - min(a["t0"] for a in ags)) if ags else 0, "end": end,
+                    "done": sum(s["state"] == "done" for s in stages), "total": len(stages), "eta": lane_eta(stages, seq)})
     return sorted(out, key=lambda l: (LANE_ORDER[l["state"]], -l["end"] if l["state"] == "done" else 0))
 
 
-def graphs(rows, pipes=()):
+def graphs(rows, pipes=(), hist=None):
     """One orchestration graph per session that spawned subagents (session = parent dir of subagents/)."""
     mains = {a["session"]: a for a in rows if a["kind"] == "main"}
     by = {sid: [] for sid in mains}
@@ -564,9 +643,14 @@ def graphs(rows, pipes=()):
             by.setdefault(a["session"], []).append(a)
     out = []
     for sid, subs in by.items():
-        m = mains.get(sid)
-        nodes = [{k: a[k] for k in ("id", "desc", "type", "status", "note", "tools", "errors", "elapsed", "t0", "t1", "last")}
-                 | {"usd": round(a["tok"]["usd"], 2)} for a in sorted(subs, key=lambda a: a["t0"])]
+        m, pipe = mains.get(sid), next((p for p in pipes if p["session"] == sid), None)
+        stage_of = {}  # agent id -> its pipeline stage's label (the first stage that matches it)
+        for s in [s for l in (pipe or {}).get("lanes", []) for s in l["stages"]]:
+            for i in s["ids"]:
+                stage_of.setdefault(i, s["label"])
+        nodes = [{k: a[k] for k in ("id", "desc", "type", "status", "note", "tools", "errors", "elapsed", "t0", "t1", "last", "act")}
+                 | {"usd": round(a["tok"]["usd"], 2)} | guess(hist or {}, role(a["desc"], a["type"], stage_of.get(a["id"])))
+                 for a in sorted(subs, key=lambda a: a["t0"])]
         turns, earlier, every = turn_nodes(m, nodes) if m and m["turns"] else ([], 0, [])
         out.append({
             "session": sid, "project": (m or subs[0])["project"], "turns": turns, "earlier": earlier,
@@ -577,14 +661,14 @@ def graphs(rows, pipes=()):
             "mtime": max([a["mtime"] for a in subs + ([m] if m else [])]),
             "usd": round(sum(a["tok"]["usd"] for a in subs), 2),
             "nodes": nodes,
-            "lanes": lanes(nodes, every, next((p for p in pipes if p["session"] == sid), None)),
+            "lanes": lanes(nodes, every, pipe),
         })
     return sorted(out, key=lambda g: (not g["live"], -g["mtime"]))
 
 
 def state():
-    rows = agents()
-    pipes = pipelines(rows)
+    rows, hist = agents(), history()
+    pipes = pipelines(rows, hist)
     finished = {p["session"] for p in pipes if all(n["state"] == "done" for l in p["lanes"] for n in l["stages"])}
     # a session without agents shows only while it is being written (a live chat), not while idle
     shown = {a["session"] for a in rows if a["kind"] == "sub" or a["status"] in ("active", "waiting")}
@@ -593,7 +677,7 @@ def state():
     pipes = [p for p in pipes if p["session"] in live]
     counts = {s: sum(a["status"] == s for a in rows) for s in ("waiting", "active", "running", "stalled?", "idle", "done")}
     counts["usd"] = round(sum(a["tok"]["usd"] for a in rows), 2)
-    return {"pipelines": pipes, "graphs": graphs(rows, pipes), "cards": cards_by_session(rows), "counts": counts,
+    return {"pipelines": pipes, "graphs": graphs(rows, pipes, hist), "cards": cards_by_session(rows), "counts": counts,
             "hide_after_min": HIDE_S / 60, "scopes": [os.path.basename(d) for d in scopes()]}
 
 

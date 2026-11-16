@@ -126,6 +126,63 @@ class AgentMonitorTests(unittest.TestCase):
         self.assertEqual(self.m.lanes([a], turns[:1])[0]["state"], "waiting")
         self.assertEqual(self.m.lanes([], []), [])
 
+    def test_estimate_is_median_of_same_role_and_needs_three_runs(self):
+        self.assertEqual(self.m.role("Review diff", "general-purpose", "Review"), "Review stage")
+        self.assertEqual(self.m.role("Review diff", "Explore"), "Explore")
+        self.assertEqual(self.m.role("Review diff", "?"), "review")
+        hist = {"Explore": [60, 300, 120, 90], "Plan": [10, 20]}
+        self.assertEqual(self.m.guess(hist, "Explore"), {"role": "Explore", "est": 105, "runs": 4})
+        self.assertEqual(self.m.guess(hist, "Plan")["est"], None)  # 2 runs: no estimate
+        self.assertEqual(self.m.guess(hist, "nope"), {"role": "nope", "est": None, "runs": 0})
+
+    def test_history_from_finished_transcripts_any_age(self):
+        sess = self.root / "-proj" / "0ld00000-0000-0000-0000-000000000000"
+        for i, (desc, typ, secs, fin) in enumerate([("Plan the cart", "Plan", 30, True), ("Plan the tax", "Plan", 90, True),
+                                                    ("Look around", "Explore", 40, True), ("Plan wip", "Plan", 999, False)]):
+            write_jsonl(sess / "subagents" / f"agent-h{i}.jsonl", [
+                {"type": "user", "timestamp": "2026-11-01T00:00:00Z", "message": {"content": desc}},
+                {"type": "assistant", "timestamp": f"2026-11-01T00:{secs // 60:02d}:{secs % 60:02d}Z", "message": {"content": []}}])
+            (sess / "subagents" / f"agent-h{i}.meta.json").write_text(
+                json.dumps({"description": desc, "agentType": typ, **({"finished": True} if fin else {})}))
+        old = time.time() - 30 * 86400  # long hidden from the board, still history
+        for f in sess.rglob("*"):
+            os.utime(f, (old, old))
+        h = self.m.history()
+        self.assertEqual(sorted(h["Plan"]), [30, 90])  # unfinished one left out
+        self.assertEqual(h["Explore"], [40])
+        self.assertEqual(h["Plan stage"], [1])  # a1 matched the abcdef12 pipeline's "Plan" stage
+        self.assertIs(self.m.history(), h)  # cached for HIST_TTL
+
+    def test_lane_progress_and_estimate(self):
+        g = next(g for g in self.m.state()["graphs"] if g["session"] == "abcdef12")
+        self.assertEqual((g["lanes"][0]["done"], g["lanes"][0]["total"]), (1, 4))
+        self.assertIsNone(g["lanes"][0]["eta"])  # under 3 runs per stage: no estimate
+        st = lambda state, est, elapsed=0, **k: {"state": state, "est": est, "elapsed": elapsed, **k}
+        pipe = [st("done", 50), st("running", 100, 30), st("pending", 200), st("waiting", None, manual=True)]
+        self.assertEqual(self.m.lane_eta(pipe, True), 70 + 200)  # stages in a row: sum, manual OK skipped
+        self.assertEqual(self.m.lane_eta([st("running", 100, 30), st("running", 60, 90)], False), 70)  # side by side: max
+        self.assertIsNone(self.m.lane_eta([st("running", 100), st("pending", None)], True))
+        self.assertIsNone(self.m.lane_eta([st("done", 50)], True))  # nothing left
+        node = {"id": "a", "desc": "x", "type": "Explore", "status": "done", "note": "", "last": "", "elapsed": 9,
+                "usd": 0, "tools": 1, "errors": 0, "t0": 0, "t1": 9}
+        b = node | {"id": "b", "status": "running"}
+        [lane] = self.m.lanes([node, b], [{"label": "q", "state": "done", "agents": [node, b]}])
+        self.assertEqual((lane["done"], lane["total"]), (1, 2))  # a question's lane counts its agents
+
+    def test_running_agent_gets_role_estimate_and_last_activity(self):
+        sess = self.root / "-proj" / "abcdef12-0000-0000-0000-000000000000"
+        for i in range(3):
+            write_jsonl(sess / "subagents" / f"agent-x{i}.jsonl", [
+                {"type": "user", "timestamp": "2026-11-13T00:00:00Z", "message": {"content": "go"}},
+                {"type": "assistant", "timestamp": f"2026-11-13T00:0{i + 1}:00Z", "message": {"content": []}}])
+            (sess / "subagents" / f"agent-x{i}.meta.json").write_text(
+                json.dumps({"description": "Execute Android part", "agentType": "general-purpose", "finished": True}))
+        g = next(g for g in self.m.state()["graphs"] if g["session"] == "abcdef12")
+        a2 = next(n for n in g["nodes"] if n["id"] == "a2")
+        self.assertEqual((a2["role"], a2["est"], a2["runs"]), ("Execute stage", 120, 3))
+        self.assertAlmostEqual(a2["act"], self.m.iso("2026-11-13T00:05:00Z").timestamp())
+        self.assertEqual(g["lanes"][0]["stages"][1]["est"], 120)
+
     def test_only_scope_repo_and_its_worktrees(self):
         titles = {a["desc"] for a in self.m.agents() if a["kind"] == "main"}
         self.assertEqual(titles, {"add offline sync", "worktree work"})

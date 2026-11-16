@@ -134,6 +134,16 @@ li .ok{color:var(--done)} li .bad{color:var(--err)} li b{color:var(--fg)}
 .scard b{font-size:14px;overflow-wrap:anywhere} .scard small{font-size:13px;color:var(--muted);overflow-wrap:anywhere}
 .scard .doing{font:13px ui-monospace,Menlo,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .scard .errs{color:var(--err)}
+/* progress and estimates: history medians, always labelled "estimate" */
+.node .est{font-size:12px;fill:var(--muted)} .node .est.over,.node .ago.stall{fill:var(--wait)}
+.node .ago{font-size:12px;fill:var(--muted)} .node .adot,.adot{fill:var(--run);background:var(--run);transform-box:fill-box;transform-origin:center;animation:dot 2s ease-in-out infinite}
+.node .adot.stall,.adot.stall{fill:var(--wait);background:var(--wait);animation:none}
+@keyframes dot{50%{opacity:.45}}
+.node .pbar rect{fill:var(--line)} .node .pbar rect+rect{fill:var(--done)}
+.prog{display:inline-block;width:46px;height:6px;border-radius:3px;background:var(--line);overflow:hidden;align-self:center}
+.prog i{display:block;height:100%;background:var(--done)} .lprog{color:var(--muted);font-size:13px;white-space:nowrap}
+.adot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;vertical-align:1px}
+.scard .est.over,.scard .act.stall{color:var(--wait)}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important}}
 </style>
 </head>
@@ -201,6 +211,27 @@ function subText(n, extra = 0) {
   return n.note || 'pending';
 }
 
+// estimates come from the median run time of finished agents with the same role (server side, 3+ runs)
+const approx = s => s < 60 ? '<1m' : s < 3600 ? `~${Math.round(s / 60)}m` : `~${Math.floor(s / 3600)}h${String(Math.round(s % 3600 / 60)).padStart(2, '0')}m`;
+const ago = s => s < 60 ? `${Math.max(0, Math.round(s))}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h${Math.floor(s % 3600 / 60)}m`;
+const LIVE_ST = ['running', 'stalled'];
+const over = (n, extra = 0) => n.elapsed + extra > n.est;
+function estText(n, extra = 0) {
+  if (!n.est || !LIVE_ST.includes(n.state)) return '';
+  return `usually ${approx(n.est)} · ${over(n, extra) ? 'taking longer than usual' : `${approx(n.est - n.elapsed - extra)} left (estimate)`}`;
+}
+const actAgo = n => n.act && LIVE_ST.includes(n.state) ? ago(Date.now() / 1000 - n.act) : '';
+const actText = n => actAgo(n) && `${n.state === 'stalled' ? 'stalled? · ' : ''}last activity ${actAgo(n)} ago`;
+const etaText = eta => eta > 0 ? `${approx(eta)} left (estimate)` : 'longer than usual';  // every step left is past its median
+const progText = n => n.total ? `${n.done}/${n.total} done${n.eta != null && n.done < n.total ? ` · ${etaText(n.eta)}` : ''}` : '';
+const actSeen = new Map();  // key -> last activity seen, so a new tool call / text pulses the dot once
+function pulse(dot, key, act) {
+  const was = actSeen.get(key);
+  actSeen.set(key, act);
+  if (was && act > was && !reduced.matches && dot.animate)
+    dot.animate([{transform: 'scale(1)'}, {transform: 'scale(2.2)', opacity: .5}, {transform: 'scale(1)'}], {duration: 600, easing: 'ease-out'});
+}
+
 /* layouts return {hub, boxes:[{x,y,n}], edges:[[d, from, to]], labels:[[x,y,text]], width, height} */
 function layoutPipeline(p) {
   const boxes = [], edges = [], labels = [], pos = [];
@@ -264,7 +295,7 @@ const IND = 26, AG_H = 110;  // subagents: indented under their question, like a
 
 function agentNode(a) {
   return {id: a.id, label: a.desc, state: STATE[a.status] || 'pending', ask: a.note, tools: a.tools, elapsed: a.elapsed,
-          usd: a.usd, last: a.last, type: a.type, errors: a.errors};
+          usd: a.usd, last: a.last, type: a.type, errors: a.errors, act: a.act, est: a.est, runs: a.runs, role: a.role};
 }
 
 const turnCols = g => [...(g.earlier ? [{label: `+${g.earlier} earlier`, state: 'done', note: 'earlier questions', agents: []}] : []), ...g.turns];
@@ -440,7 +471,8 @@ function initPanZoom() {
     const d = e.pointerType !== 'touch' && !drag && nodeAt(e);
     tip.classList.toggle('on', !!d);
     if (!d) return;
-    tip.textContent = [d.n.label, nodeMeta(d.n) + (d.n.errors ? ` · ${d.n.errors} tool errors` : ''), nodeDoing(d.n), subText(d.n)].join('\n');
+    tip.textContent = [d.n.label, nodeMeta(d.n) + (d.n.errors ? ` · ${d.n.errors} tool errors` : ''), nodeDoing(d.n), subText(d.n),
+                       actText(d.n), estText(d.n, (Date.now() - fetchedAt) / 1000), progText(d.n)].filter(Boolean).join('\n');
     const x = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8), y = e.clientY + 16 + tip.offsetHeight > innerHeight ? e.clientY - tip.offsetHeight - 10 : e.clientY + 16;
     tip.style.left = `${x}px`; tip.style.top = `${y}px`;
   });
@@ -452,7 +484,7 @@ function initPanZoom() {
 let view = 'tree', T = null;
 try { view = ['tree', 'lanes', 'flow'].find(x => x === localStorage.getItem('agentmon.layout')) || view; } catch (e) {}
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
-const TW = 250, TH = 82, TGX = 64, TROW = 94, LIVE = ['running', 'waiting', 'stalled'];
+const TW = 250, TH = 100, TGX = 64, TROW = 112, LIVE = ['running', 'waiting', 'stalled'];
 const treeOpen = {};  // session -> {tree key: open}
 const leaves = t => t.kids.length ? t.kids.flatMap(leaves) : [t];
 const isActive = t => LIVE.includes(t.n.state) || t.kids.some(isActive);
@@ -477,6 +509,7 @@ function buildTree(v, hubNote) {
     });
     const ls = kids.flatMap(leaves), live = ls.find(t => LIVE.includes(t.n.state));
     return mk(lk, '', {label: l.name, type: 'lane', state: l.state || aggState(ls.map(t => t.n.state)), usd: l.usd, elapsed: l.elapsed,
+                       done: l.done, total: l.total, eta: l.eta,
                        tools: sum(ls, 'tools'), last: live ? live.n.last : `${ls.filter(t => t.n.state === 'done').length}/${ls.length} done`}, kids);
   });
   const st = hubNote ? 'waiting' : aggState(lanes.map(t => t.n.state));
@@ -489,7 +522,12 @@ function newCard(t) {
   const g = el('g', {}, T.ng), card = el('g', {tabindex: 0, role: 'button'}, g);
   const d = {g, card, edge: t.anc.length ? el('path', {}, T.eg) : null};
   el('rect', {class: 'box', width: TW, height: TH, rx: 10}, card);
-  [['title', 22], ['meta', 41], ['doing', 59], ['sub', 76]].forEach(([c, y]) => { d[c] = el('text', {x: 12, y, class: c}, card); });
+  [['title', 22], ['meta', 41], ['doing', 59], ['sub', 76], ['est', 93]].forEach(([c, y]) => { d[c] = el('text', {x: 12, y, class: c}, card); });
+  d.ago = el('text', {x: TW - 22, y: 20, class: 'ago', 'text-anchor': 'end'}, card);
+  d.adot = el('circle', {cx: TW - 13, cy: 16, r: 4, class: 'adot'}, card);
+  d.bar = el('g', {class: 'pbar', transform: `translate(12,${TH - 15})`}, card);
+  el('rect', {width: 46, height: 6, rx: 3}, d.bar);
+  d.fill = el('rect', {height: 6, rx: 3}, d.bar);
   d.tog = el('g', {class: 'tog', tabindex: 0, role: 'button', transform: `translate(${TW},${TH / 2})`}, g);
   el('circle', {r: 11}, d.tog);
   d.arrow = el('text', {'text-anchor': 'middle', y: 5}, d.tog);
@@ -503,7 +541,21 @@ function fillCard(d, t) {
   d.card.setAttribute('class', `node ${n.state}${t.dk === openKey ? ' sel' : ''}`);
   d.card.dataset.key = t.dk;
   d.card.setAttribute('aria-label', `${n.label}, ${STATE_TXT[n.state] || n.state}`);
-  d.title.textContent = cut(n.label, 28);
+  const live = !!actAgo(n);
+  d.title.textContent = cut(n.label, live ? 20 : 28);
+  d.adot.style.display = live ? '' : 'none';
+  d.adot.setAttribute('class', `adot${n.state === 'stalled' ? ' stall' : ''}`);
+  d.ago.setAttribute('class', `ago${n.state === 'stalled' ? ' stall' : ''}`);
+  if (live) pulse(d.adot, t.dk, n.act);
+  d.bar.style.display = n.total ? '' : 'none';
+  if (n.total) d.fill.setAttribute('width', 46 * n.done / n.total);
+  d.est.setAttribute('x', n.total ? 66 : 12);
+  d.upd = extra => {
+    d.ago.textContent = live ? `${actAgo(n)} ago` : '';
+    d.est.textContent = n.total ? progText(n).replace(' done', '') : estText(n, extra);
+    d.est.setAttribute('class', `est${n.est && LIVE_ST.includes(n.state) && over(n, extra) ? ' over' : ''}`);
+  };
+  d.upd((Date.now() - fetchedAt) / 1000);
   d.meta.textContent = cut(`${n.type || 'stage'} · ${ICON[n.state] || '○'} ${STATE_TXT[n.state] || n.state}`, n.errors ? 22 : 33);
   if (n.errors) el('tspan', {class: 'errs'}, d.meta).textContent = ` · ${n.errors} err`;
   d.doing.textContent = cut(nodeDoing(n), 29);
@@ -570,7 +622,7 @@ function treeUpdate(sid, root) {
   }
   const walk = t => { all.push(t); t.kids.forEach(walk); };
   walk(root);
-  drawn = all.map(t => { const d = shown.has(t.tk) && T.nodes.get(t.tk); return d ? {n: t.n, key: t.dk, g: d.card, sub: d.sub, doing: d.doing, chars: 29} : {n: t.n, key: t.dk, g: h('i')}; });
+  drawn = all.map(t => { const d = shown.has(t.tk) && T.nodes.get(t.tk); return d ? {n: t.n, key: t.dk, g: d.card, sub: d.sub, doing: d.doing, chars: 29, upd: d.upd} : {n: t.n, key: t.dk, g: h('i')}; });
   if (!moved && vb) return;
   content = {x: 0, y: 0, w: 20 + (depth + 1) * (TW + TGX) + 60, h: 20 + rows * TROW - (TROW - TH)};
   svg.style.height = `${Math.round(Math.max(480, Math.min(content.h * autoK + 20, innerHeight * 0.88)))}px`;
@@ -615,9 +667,10 @@ const treeToggle = tk => treeFold(t => t.tk === tk ? !t.open : undefined);
 
 function tick() {  // live clocks and "now doing" lines without re-rendering (keeps animations smooth)
   const extra = (Date.now() - fetchedAt) / 1000;
-  drawn.forEach(({n, sub, doing, chars}) => {
+  drawn.forEach(({n, sub, doing, chars, upd}) => {
     if (sub && n.state === 'running') sub.textContent = subText(n, extra);
     if (doing) doing.textContent = chars ? cut(nodeDoing(n), chars) : nodeDoing(n);
+    if (upd) upd(extra);
   });
   laneClocks.forEach(({el, l}) => { el.textContent = laneMeta(l, extra); });
 }
@@ -627,7 +680,8 @@ const laneOpen = new Map();  // session|lane -> open, once you toggle it; surviv
 let laneClocks = [];
 const ICON = {done: '✓', running: '◔', stalled: '◔', waiting: '⏸', error: '✗', failed: '✗'};
 const GROUP = {running: '● Running', waiting: '● Running', done: 'Finished', pending: 'Not started'};
-const laneMeta = (l, extra = 0) => [l.usd ? `$${l.usd.toFixed(2)}` : '', l.elapsed ? fmt(l.elapsed + (GROUP[l.state] === GROUP.running ? extra : 0)) : ''].filter(Boolean).join(' · ');
+const laneMeta = (l, extra = 0) => [l.eta != null && l.done < l.total ? etaText(l.eta) : '', l.usd ? `$${l.usd.toFixed(2)}` : '',
+  l.elapsed ? fmt(l.elapsed + (GROUP[l.state] === GROUP.running ? extra : 0)) : ''].filter(Boolean).join(' · ');
 
 function renderLanes(lanes) {
   const board = document.getElementById('board'), f = document.activeElement;
@@ -643,6 +697,13 @@ function renderLanes(lanes) {
     head.dataset.lane = lk;
     head.setAttribute('aria-expanded', open);
     head.append(h('span', 'caret', open ? '▾' : '▸'), h('span', 'lname', l.name));
+    if (l.total) {  // steps done / total
+      const bar = h('span', 'prog'), fill = h('i');
+      fill.style.width = `${100 * l.done / l.total}%`;
+      bar.append(fill);
+      head.append(bar, h('span', 'lprog', `${l.done}/${l.total}`));
+      head.setAttribute('aria-label', `${l.name}, ${l.done} of ${l.total} done`);
+    }
     head.onclick = () => { laneOpen.set(lk, !open); renderLanes(lanes); };
     if (live) laneClocks.push({el: meta, l});
     const box = h('div', open ? 'cards' : 'chips');
@@ -670,6 +731,14 @@ function stageEl(l, s, j, card) {
     if (s.desc && s.desc !== s.label) b.append(h('small', '', s.desc));
     if (s.last || !['done', 'pending'].includes(s.state)) b.append(d.doing = h('span', 'doing', nodeDoing(n)));
     b.append(d.sub = h('small', '', subText(n)));
+    if (actAgo(n)) {
+      const dot = h('span', `adot${n.state === 'stalled' ? ' stall' : ''}`), act = h('small', `act${n.state === 'stalled' ? ' stall' : ''}`), est = h('small', 'est');
+      act.append(dot, d.actEl = h('span', '', actText(n)));
+      b.append(act, est);
+      pulse(dot, key, n.act);
+      d.upd = extra => { d.actEl.textContent = actText(n); est.textContent = estText(n, extra); est.className = `est${n.est && over(n, extra) ? ' over' : ''}`; };
+      d.upd((Date.now() - fetchedAt) / 1000);
+    }
   }
   b.onclick = () => openDetail(d);
   drawn.push(d);
@@ -811,6 +880,11 @@ function renderDetail() {
   row('Started', q && n.t0 ? new Date(n.t0 * 1000).toLocaleString([], {hour12: false}) : data.start);
   row('Elapsed', fmt(q || !data.elapsed ? n.elapsed || 0 : data.elapsed));
   row(open ? 'Now doing' : 'Last action', nodeDoing(n));
+  row('Last activity', n.act && !['done', 'pending'].includes(n.state) ? `${n.state === 'stalled' ? 'stalled? · ' : ''}${ago(Date.now() / 1000 - n.act)} ago (${clock(n.act * 1000)})` : '');
+  row('Progress', progText(n));
+  if (n.role) row('Estimate', n.est ? `usually ${approx(n.est)} (median of ${n.runs} finished “${n.role}” runs)${LIVE_ST.includes(n.state)
+    ? ` · ${over(n, (Date.now() - fetchedAt) / 1000) ? 'taking longer than usual' : `${approx(n.est - n.elapsed - (Date.now() - fetchedAt) / 1000)} left`}` : ''} · estimate`
+    : `none yet: ${n.runs} finished “${n.role}” run${n.runs === 1 ? '' : 's'}, needs 3`);
   row('Tools', `${q ? n.tools : data.tools ?? n.tools ?? 0} calls${data.errors && !q ? ` · ${data.errors} errors` : ''}`);
   row('Cost', n.usd || tok ? `$${(q ? n.usd || 0 : tok ? tok.usd : n.usd).toFixed(2)}` : '');
   if (tok) row(q ? 'Session tokens' : 'Tokens', `in ${ktok(tok.input)} · out ${ktok(tok.output)} · cache read ${ktok(tok.cache_read)} · cache write ${ktok(tok.cache_write)}`);

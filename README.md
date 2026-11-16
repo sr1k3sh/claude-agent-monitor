@@ -7,6 +7,7 @@ A Claude Code plugin: a live local dashboard (http://127.0.0.1:8765) of the Clau
 - Each node shows what the agent is doing now; click it for its prompt, tool-call timeline and final report. Pan and zoom the graph.
 - Default view is a **Tree**: session → lanes → stages → agents, left to right, as readable cards joined by curved lines. Every branch folds (▸/▾); live branches open down to the running agent, finished ones fold to a count badge (`5 ✓ · 1 ◔`). Your folds are remembered; **Expand all** / **Collapse finished** / **Fit**.
 - **Lanes** is a board, one row per lane (task pipeline lanes, else one per question); **Flow** is the flow graph. **Tree · Lanes · Flow** switches views (remembered).
+- Progress and time estimates: `done/total` per lane with a bar, `last activity 12s ago` on running agents (amber `stalled?` when quiet), and `usually ~2m · ~1m left (estimate)` from the median of your finished agents with the same role (shown only with 3+ runs).
 - Live tool calls, errors, tokens and estimated cost for every session and agent.
 - Only watched repos (plus their worktrees). Finished, idle or cleared sessions drop off on their own.
 
