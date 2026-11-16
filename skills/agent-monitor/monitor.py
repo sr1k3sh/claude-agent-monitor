@@ -2,7 +2,7 @@
 """Local dashboard of live Claude Code sessions and their subagents: http://127.0.0.1:8765
 
 Only sessions started in a watched repo (or one of its worktrees) are read:
-~/.claude/projects/<that dir>*/<session>.jsonl and <session>/subagents/agent-*.jsonl.
+~/.claude/projects/<that dir>*/<session>.jsonl and <session>/subagents/**/agent-*.jsonl (workflow agents sit in subagents/workflows/<run>/).
 Watched repos are listed in $AGENT_MONITOR_HOME/scopes.json (`monitor.py scope add DIR`).
 A session is shown while it is active (written in the last 2 min) or, once it has run subagents, while it or one of its agents wrote in the last HIDE_AFTER_MIN minutes
 (default 30) and, when it has a task pipeline ($AGENT_MONITOR_HOME/pipelines/*.json), while that
@@ -336,8 +336,8 @@ def row(p, kind, meta, status, note=""):
     return {
         "id": os.path.basename(p).removeprefix("agent-").removesuffix(".jsonl"),
         "kind": kind,
-        "project": project_name(p.split("/")[-4 if kind == "sub" else -2]),
-        "session": p.split("/")[-3][:8] if kind == "sub" else os.path.basename(p)[:8],
+        "project": project_name(rel(p)[0]),
+        "session": rel(p)[1][:8] if kind == "sub" else os.path.basename(p)[:8],
         "desc": meta.get("description", os.path.basename(p)),
         "type": meta.get("agentType", "?"),
         "status": status, "note": note, "tools": tools, "errors": errors, "tok": tok,
@@ -363,12 +363,32 @@ def scoped_dirs():
     return sorted(out)
 
 
+def rel(p):
+    """[project dir, session id, ...] of a transcript path under ROOT."""
+    return os.path.relpath(p, ROOT).split(os.sep)
+
+
+def sub_glob(d, sid="*"):
+    """Subagent transcripts of a session, including workflow agents (subagents/workflows/<run>/agent-*.jsonl)."""
+    return glob.glob(os.path.join(d, sid, "subagents", "**", "agent-*.jsonl"), recursive=True)
+
+
 def read_meta(p):
     try:
         with open(p[: -len(".jsonl")] + ".meta.json") as f:
-            return json.load(f)
+            meta = json.load(f)
     except (OSError, ValueError):
         return {}
+    journal = os.path.join(os.path.dirname(p), "journal.jsonl")
+    if not meta.get("finished") and os.path.exists(journal):  # workflow agents: done once the run journal has their result
+        aid = os.path.basename(p)[len("agent-"):-len(".jsonl")]
+        try:
+            with open(journal) as f:
+                meta["finished"] = any(r.get("type") == "result" and r.get("agentId") == aid
+                                       for r in map(json.loads, f))
+        except (OSError, ValueError):
+            pass
+    return meta
 
 
 def agents():
@@ -377,15 +397,15 @@ def agents():
     for d in scoped_dirs():
         for p in glob.glob(os.path.join(d, "*.jsonl")):
             last[os.path.basename(p)[:-6]] = (d, max(last.get(os.path.basename(p)[:-6], (d, 0))[1], os.path.getmtime(p)))
-        for p in glob.glob(os.path.join(d, "*", "subagents", "agent-*.jsonl")):
-            sid = p.split("/")[-3]
+        for p in sub_glob(d):
+            sid = rel(p)[1]
             last[sid] = (d, max(last.get(sid, (d, 0))[1], os.path.getmtime(p)))
     for sid, (d, t) in last.items():
         flag_t, flag_msg = wait_flag(sid)
         if now - max(t, flag_t) > HIDE_S:
             continue
         subs = []
-        for p in glob.glob(os.path.join(d, sid, "subagents", "agent-*.jsonl")):
+        for p in sub_glob(d, sid):
             meta = read_meta(p)
             mtime = os.path.getmtime(p)
             # a prompt newer than this agent's last write: it is the one blocked on the user (or paused behind it)
@@ -473,14 +493,14 @@ def history():
             for s in lane.get("stages", []):
                 if s.get("match") and s.get("label"):
                     match.setdefault(str(spec.get("session", ""))[:8], []).append((s["match"].lower(), s["label"]))
-    files = [p for d in scoped_dirs() for p in glob.glob(os.path.join(d, "*", "subagents", "agent-*.jsonl"))]
+    files = [p for d in scoped_dirs() for p in sub_glob(d)]
     out = {}
     for p in sorted(files, key=os.path.getmtime, reverse=True)[:HIST_MAX]:
         meta = read_meta(p)
         dur = meta.get("finished") and parse(p, _span)  # a finished transcript never changes: parsed once
         if dur and dur > 0:
             desc = str(meta.get("description", ""))
-            stage = next((lbl for m, lbl in match.get(p.split("/")[-3][:8], []) if m in desc.lower()), None)
+            stage = next((lbl for m, lbl in match.get(rel(p)[1][:8], []) if m in desc.lower()), None)
             out.setdefault(role(desc, meta.get("agentType"), stage), []).append(dur)
     _hist.update(t=time.time(), v=out)
     return out

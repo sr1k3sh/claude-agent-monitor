@@ -96,6 +96,16 @@ class AgentMonitorTests(unittest.TestCase):
         self.assertEqual([n["desc"] for n in g["nodes"]], ["Plan the swap", "Execute Android"])
         self.assertTrue(g["live"])  # a2 has no finished flag and was just written
 
+    def test_workflow_agents_show_under_their_session_and_finish_from_journal(self):
+        wf = self.root / "-proj" / "abcdef12-0000-0000-0000-000000000000" / "subagents" / "workflows" / "wf_1"
+        for aid, label in (("w1", "research:ios"), ("w2", "review:reliability")):
+            write_jsonl(wf / f"agent-{aid}.jsonl", [assistant(aid, "2026-11-13T00:06:00Z", MTOK, label)])
+            (wf / f"agent-{aid}.meta.json").write_text(json.dumps({"description": label, "agentType": "workflow-subagent"}))
+        write_jsonl(wf / "journal.jsonl", [{"type": "launched"}, {"type": "result", "agentId": "w1", "result": "ok"}])
+        rows = {a["id"]: a for a in self.m.agents()}
+        self.assertEqual((rows["w1"]["session"], rows["w1"]["project"]), ("abcdef12", rows["a1"]["project"]))
+        self.assertEqual((rows["w1"]["status"], rows["w2"]["status"]), ("done", "running"))
+
     def test_pipeline_states_and_bad_file_skipped(self):
         [p] = self.m.state()["pipelines"]
         self.assertEqual([n["state"] for n in p["lanes"][0]["stages"]], ["done", "running", "pending", "waiting"])
