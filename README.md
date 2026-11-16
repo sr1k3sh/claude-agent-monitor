@@ -36,6 +36,10 @@ claude plugin marketplace add sr1k3sh/claude-agent-monitor
 claude plugin install agent-monitor@sr1k3sh-plugins
 ```
 
+Or inside a Claude Code session: `/plugin marketplace add sr1k3sh/claude-agent-monitor`, then `/plugin install agent-monitor@sr1k3sh-plugins`.
+
+Not listed in the Claude plugin directory: the directory accepts plugins that ship scripts or hooks only from verified organizations, and this one runs a small local Python server. Install it from this repository's marketplace as above.
+
 Update: `claude plugin marketplace update sr1k3sh-plugins && claude plugin update agent-monitor@sr1k3sh-plugins`, then `/reload-plugins`.
 
 From a local clone: `claude plugin marketplace add /path/to/claude-agent-monitor`, then install the same way. Edits apply on the next session or after `/reload-plugins`.
