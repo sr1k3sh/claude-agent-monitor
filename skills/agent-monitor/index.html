@@ -16,7 +16,7 @@ h2{margin:4px 0 12px} h2 small{font-size:12px;color:var(--muted);font-weight:400
 #graphwrap{position:relative;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--bg)}
 #graph{display:block;width:100%;height:320px;touch-action:none;cursor:grab;user-select:none}
 #graph.dragging{cursor:grabbing}
-.zoom{position:absolute;top:8px;right:8px;display:flex;gap:4px}
+.zoom{position:absolute;top:8px;right:8px;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px}
 .zoom button{border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:6px;min-width:30px;height:28px;font:13px system-ui;cursor:pointer}
 .zoom button:hover{border-color:var(--run)}
 .lane-label{font-size:12px;fill:var(--muted);font-weight:600;letter-spacing:.03em}
@@ -50,9 +50,9 @@ h2{margin:4px 0 12px} h2 small{font-size:12px;color:var(--muted);font-weight:400
 .node.running .ring{stroke:var(--run);stroke-dasharray:22 41;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes glow{50%{filter:drop-shadow(0 0 8px color-mix(in srgb,var(--run) 60%,transparent))}}
-.node.waiting rect.box,.node.stalled rect.box{stroke:var(--wait);stroke-dasharray:none;animation:blink 1.4s ease-in-out infinite}
+.node.waiting rect.box,.node.stalled rect.box{stroke:var(--wait);stroke-dasharray:none;fill:color-mix(in srgb,var(--wait) 12%,var(--card));animation:blink 1.4s ease-in-out infinite}
 .node.waiting .ring,.node.stalled .ring{stroke:var(--wait);stroke-dasharray:4 6}
-@keyframes blink{50%{fill:color-mix(in srgb,var(--wait) 16%,var(--card))}}
+@keyframes blink{50%{stroke-opacity:.3}}  /* not fill: Chrome animates a var()/color-mix fill to black */
 .node .pause rect{fill:var(--wait)}
 .node.hub.waiting .title,.now .wait b{fill:var(--wait);color:var(--wait)}
 .node .bars rect{fill:var(--run);opacity:.85;transform-box:fill-box;transform-origin:bottom;animation:eq 1s ease-in-out infinite}
@@ -100,23 +100,40 @@ li.text{color:var(--text)} li.error{color:var(--err)}
 .pill{display:inline-block;border-radius:999px;padding:1px 8px;font-size:11px;font-weight:600;color:#fff;background:var(--muted);margin-right:4px}
 .pill.running{background:var(--run)} .pill.done{background:var(--done)} .pill.waiting,.pill.stalled{background:var(--wait)} .pill.err{background:var(--err)}
 li .ok{color:var(--done)} li .bad{color:var(--err)} li b{color:var(--fg)}
-/* force graph view: circles sized by cost, coloured by state */
-.fedge{stroke:var(--edge);stroke-width:1.5}
-.fedge.done{stroke:color-mix(in srgb,var(--done) 50%,var(--edge))}
-.fedge.active{stroke:var(--run);stroke-width:2}
-.fnode .dot{fill:var(--card);stroke:var(--edge);stroke-width:2;stroke-dasharray:4 3}
-.fnode.done .dot{fill:var(--done);stroke:var(--done);stroke-dasharray:none}
-.fnode.running .dot{fill:var(--run);stroke:var(--run);stroke-dasharray:none}
-.fnode.waiting .dot,.fnode.stalled .dot{fill:var(--wait);stroke:var(--wait);stroke-dasharray:none}
-.fnode.errs .dot{stroke:var(--err);stroke-width:3.5}
-.fnode.hub .dot{fill:var(--card);stroke-width:5}
-.fnode .halo{fill:none;stroke:none;opacity:0;transform-box:fill-box;transform-origin:center}
-.fnode.running .halo{stroke:var(--run);stroke-width:2;animation:pulse 1.6s ease-out infinite}
-.fnode.waiting .halo{stroke:var(--wait);stroke-width:2;animation:pulse 1.6s ease-out infinite}
-@keyframes pulse{0%{opacity:.8;transform:scale(.85)}100%{opacity:0;transform:scale(1.6)}}
-.fnode .flabel{font-size:11px;fill:var(--muted);paint-order:stroke;stroke:var(--bg);stroke-width:3px;stroke-linejoin:round}
-.fnode.hub .flabel{font-size:12px;font-weight:600;fill:var(--fg)}
-.fnode:hover .dot,.fnode:focus-visible .dot,.fnode.sel .dot{stroke:var(--fg);stroke-width:3;stroke-dasharray:none}
+/* tree view: cards left to right, curved connectors, ▸/▾ folds a branch */
+#graph.tree .node .title{font-size:14px} #graph.tree .node .meta,#graph.tree .node .sub,#graph.tree .node .doing{font-size:13px}
+.edge.wait{stroke:var(--wait)}
+.tog{cursor:pointer;outline:none} .tog circle{fill:var(--card);stroke:var(--edge);stroke-width:1.5}
+.tog text{font-size:13px;fill:var(--fg);pointer-events:none} .tog:hover circle,.tog:focus-visible circle{stroke:var(--fg);stroke-width:2.5}
+.badge{font-size:13px;fill:var(--muted);paint-order:stroke;stroke:var(--bg);stroke-width:3px}
+.badge .done{fill:var(--done)} .badge .running,.badge .stalled{fill:var(--run)} .badge .waiting{fill:var(--wait)} .badge .error,.badge .failed{fill:var(--err)}
+.panel:not(.tree) .tonly{display:none}
+@media (max-width:600px){#graphwrap{display:flex;flex-direction:column}.zoom{position:static;order:-1;justify-content:flex-start;padding:6px;border-bottom:1px solid var(--line)}}
+/* lanes board: one row per lane, stage cards left to right */
+.vsw{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;float:right;margin-left:8px}
+.vsw button{border:0;background:var(--card);color:var(--fg);font:13px system-ui;padding:4px 10px;cursor:pointer}
+.vsw button[aria-pressed=true]{background:color-mix(in srgb,var(--run) 16%,var(--card));font-weight:600}
+.panel.lanes #graphwrap,.panel.lanes #now,.panel.lanes .legend .gonly,.panel:not(.lanes) #board{display:none}
+#board h4{margin:10px 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+#board h4.live{color:var(--run)}
+.lane{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;border-top:1px solid var(--line);padding:6px 0}
+.lhead{display:flex;align-items:baseline;gap:6px;max-width:100%;border:0;background:none;color:var(--fg);font:14px system-ui;text-align:left;padding:4px 2px;cursor:pointer;border-radius:6px}
+.lhead:hover,.lhead:focus-visible{background:color-mix(in srgb,var(--run) 7%,transparent)}
+.lhead .caret{width:1em;color:var(--muted)} .lhead .lname{font-weight:600;flex:0 1 auto;min-width:0;overflow-wrap:anywhere}
+.lmeta{color:var(--muted);font-size:13px;margin-left:auto;white-space:nowrap}
+.chips{display:flex;flex-wrap:wrap;gap:4px;flex:1 1 auto;min-width:0}
+.chip,.scard{border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:999px;font:13px system-ui;padding:2px 9px;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip:hover,.chip:focus-visible,.scard:hover,.scard:focus-visible,.chip.sel,.scard.sel{border-color:var(--fg)}
+.ic{font-weight:700;margin-right:4px} .done .ic{color:var(--done)} .running .ic,.stalled .ic{color:var(--run)}
+.waiting .ic{color:var(--wait)} .error .ic,.failed .ic{color:var(--err)} .pending{color:var(--muted)}
+.cards{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;flex-basis:100%;padding:2px 0 4px 1.4em}
+.scard{display:flex;flex-direction:column;gap:2px;text-align:left;border-radius:10px;padding:8px 10px;flex:1 1 210px;max-width:320px;white-space:normal;border-left:4px solid var(--edge)}
+.scard.done{border-left-color:var(--done)} .scard.running,.scard.stalled{border-left-color:var(--run)} .scard.waiting{border-left-color:var(--wait)} .scard.error,.scard.failed{border-left-color:var(--err)}
+.scard.running{animation:breathe 2.4s ease-in-out infinite}
+@keyframes breathe{50%{box-shadow:0 0 0 3px color-mix(in srgb,var(--run) 22%,transparent)}}
+.scard b{font-size:14px;overflow-wrap:anywhere} .scard small{font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+.scard .doing{font:13px ui-monospace,Menlo,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.scard .errs{color:var(--err)}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important}}
 </style>
 </head>
@@ -124,17 +141,19 @@ li .ok{color:var(--done)} li .bad{color:var(--err)} li b{color:var(--fg)}
 <h2>Agent Monitor <small id="counts">loading…</small></h2>
 <section class="panel">
   <div class="tabs" id="tabs" role="tablist" aria-label="Sessions"></div>
+  <div class="vsw" role="group" aria-label="View"><button data-view="tree">Tree</button><button data-view="lanes">Lanes</button><button data-view="flow">Flow</button></div>
   <h3><span id="ptitle">Orchestration</span><span class="ptitle-sub" id="psub"></span></h3>
   <div id="graphwrap">
     <svg id="graph" role="group" aria-label="Orchestration graph: click a node for details, drag to pan, wheel to zoom"></svg>
-    <div class="zoom"><button id="zin" title="Zoom in" aria-label="Zoom in">+</button><button id="zout" title="Zoom out" aria-label="Zoom out">−</button><button id="zfit" title="Fit the whole graph">Fit</button><button id="zview" title="Switch between the node graph and the flow view"></button></div>
+    <div class="zoom"><button id="zin" title="Zoom in" aria-label="Zoom in">+</button><button id="zout" title="Zoom out" aria-label="Zoom out">−</button><button id="texp" class="tonly">Expand all</button><button id="tcol" class="tonly">Collapse finished</button><button id="zfit" title="Fit the whole graph">Fit</button></div>
   </div>
+  <div id="board"></div>
   <div class="now" id="now"></div>
   <div class="legend">
     <span><i style="background:var(--done)"></i>done</span>
     <span><i style="background:var(--run)"></i>running</span>
     <span><i style="background:var(--wait)"></i>waiting on you / stalled</span>
-    <span><i style="background:var(--err)"></i>has tool errors</span>
+    <span class="gonly"><i style="background:var(--err)"></i>has tool errors</span>
     <span><i style="border:1px dashed var(--muted)"></i>pending</span>
     <span id="hint"></span>
   </div>
@@ -334,7 +353,7 @@ function draw(L) {
     doing.textContent = cut(nodeDoing(n), chars(0));
     const sub = el('text', {x: 44, y: 78, class: 'sub'}, g);
     sub.textContent = subText(n);
-    drawn.push({n, sub, doing, key, g, w});
+    drawn.push({n, sub, doing, key, g, chars: Math.floor((w - 50) / 6.6)});
   });
 }
 
@@ -364,20 +383,9 @@ function initPanZoom() {
   svg.addEventListener('pointerdown', e => {
     if (e.button !== 0) return;
     dragMoved = false;
-    const d = F && nodeAt(e);  // graph view: dragging a node moves it, anywhere else pans
-    if (d) ndrag = {node: F.nodes.get(d.key), x: e.clientX, y: e.clientY};
-    else drag = {x: e.clientX, y: e.clientY, vb: {...vb}};
+    drag = {x: e.clientX, y: e.clientY, vb: {...vb}};
   });
   addEventListener('pointermove', e => {
-    if (ndrag && (dragMoved || Math.hypot(e.clientX - ndrag.x, e.clientY - ndrag.y) >= 4)) {
-      const r = svg.getBoundingClientRect();
-      dragMoved = true;
-      svg.classList.add('dragging');
-      ndrag.node.fx = vb.x + (e.clientX - r.left) * vb.w / r.width;
-      ndrag.node.fy = vb.y + (e.clientY - r.top) * vb.h / r.height;
-      F.alpha = Math.max(F.alpha, 0.3);
-      kick();
-    }
     if (!drag) return;
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     if (!dragMoved && Math.hypot(dx, dy) < 4) return;  // a click, not a drag
@@ -388,34 +396,48 @@ function initPanZoom() {
     setVB();
   });
   addEventListener('pointerup', () => {
-    if (ndrag) ndrag.node.fx = ndrag.node.fy = null;  // let go: it floats back into the layout
-    drag = ndrag = null;
+    drag = null;
     svg.classList.remove('dragging');
   });
   document.getElementById('zin').onclick = () => zoom(1.25);
   document.getElementById('zout').onclick = () => zoom(0.8);
   document.getElementById('zfit').onclick = () => { auto = true; autoK = 0; fit(0); };
-  const zv = document.getElementById('zview'), label = () => {
-    zv.textContent = view === 'force' ? 'Flow' : 'Graph';
-    document.getElementById('hint').textContent = `${view === 'force' ? 'circle size = cost · ' : ''}click a node for details · drag to pan${view === 'force' ? ' or move a node' : ''} · wheel to zoom`;
+  document.getElementById('texp').onclick = () => treeFold(t => true);
+  document.getElementById('tcol').onclick = () => treeFold(t => t.anc.length && !isActive(t) ? false : undefined);
+  const btns = document.querySelectorAll('.vsw button'), label = () => {
+    btns.forEach(b => b.setAttribute('aria-pressed', b.dataset.view === view));
+    document.querySelector('.panel').classList.toggle('lanes', view === 'lanes');
+    document.querySelector('.panel').classList.toggle('tree', view === 'tree');
+    svg.classList.toggle('tree', view === 'tree');
+    document.getElementById('hint').textContent = view === 'lanes' ? 'click a stage for details · ▸ opens a lane'
+      : `click a card for details${view === 'tree' ? ' · ▸/▾ folds a branch' : ''} · drag to pan · wheel to zoom`;
   };
   label();
-  zv.onclick = () => {
-    view = view === 'force' ? 'flow' : 'force';
-    try { localStorage.setItem('agentmon.view', view); } catch (e) {}
+  btns.forEach(b => b.onclick = () => {
+    view = b.dataset.view;
+    try { localStorage.setItem('agentmon.layout', view); } catch (e) {}
     label();
-    stopForce();
+    stopTree();
     svg.replaceChildren();
-    sig = ''; auto = true; autoK = view === 'force' ? 0 : 0.75;
+    sig = ''; auto = true; autoK = 0.75;
     if (last) showGraph(last);
-  };
-  addEventListener('resize', () => auto ? fit(autoK) : (vb.h = vb.w * svg.clientHeight / svg.clientWidth, setVB()));
+  });
+  addEventListener('resize', () => auto || !vb ? fit(autoK) : (vb.h = vb.w * svg.clientHeight / svg.clientWidth, setVB()));
   // nodes: click / Enter opens the detail drawer, hover shows the summary
   const tip = document.getElementById('tip');
-  svg.addEventListener('click', e => { const d = !dragMoved && nodeAt(e); if (d) { tip.classList.remove('on'); openDetail(d); } });
-  svg.addEventListener('keydown', e => { const d = (e.key === 'Enter' || e.key === ' ') && nodeAt(e); if (d) { e.preventDefault(); openDetail(d); } });
+  const togAt = e => e.target.closest && e.target.closest('.tog');
+  svg.addEventListener('click', e => {
+    const d = !dragMoved && nodeAt(e), t = !dragMoved && togAt(e);
+    if (t) treeToggle(t.dataset.tk); else if (d) { tip.classList.remove('on'); openDetail(d); }
+  });
+  svg.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const d = nodeAt(e), t = togAt(e);
+    if (t || d) e.preventDefault();
+    if (t) treeToggle(t.dataset.tk); else if (d) openDetail(d);
+  });
   svg.addEventListener('pointermove', e => {
-    const d = e.pointerType !== 'touch' && !drag && !ndrag && nodeAt(e);
+    const d = e.pointerType !== 'touch' && !drag && nodeAt(e);
     tip.classList.toggle('on', !!d);
     if (!d) return;
     tip.textContent = [d.n.label, nodeMeta(d.n) + (d.n.errors ? ` · ${d.n.errors} tool errors` : ''), nodeDoing(d.n), subText(d.n)].join('\n');
@@ -425,123 +447,233 @@ function initPanZoom() {
   svg.addEventListener('pointerleave', () => tip.classList.remove('on'));
 }
 
-/* graph view: a small force simulation (repulsion + spring links + centring, damped), drawn in the same svg.
-   Nodes keep their positions across polls; only added/removed nodes reheat it. */
-let view = 'force', F = null, ndrag = null;
-try { view = localStorage.getItem('agentmon.view') || 'force'; } catch (e) {}
+/* tree view: session -> lanes -> stages -> agents, left to right; ▸/▾ folds a branch. Cards keep their DOM across
+   polls, so they only move (animated) when the shown shape changes. Your toggles beat the defaults (live branches open). */
+let view = 'tree', T = null;
+try { view = ['tree', 'lanes', 'flow'].find(x => x === localStorage.getItem('agentmon.layout')) || view; } catch (e) {}
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
-const radius = n => n.hub ? 26 : Math.max(8, Math.min(24, 8 + Math.sqrt(n.usd || 0) * 6));
+const TW = 250, TH = 82, TGX = 64, TROW = 94, LIVE = ['running', 'waiting', 'stalled'];
+const treeOpen = {};  // session -> {tree key: open}
+const leaves = t => t.kids.length ? t.kids.flatMap(leaves) : [t];
+const isActive = t => LIVE.includes(t.n.state) || t.kids.some(isActive);
+const aggState = sts => sts.includes('waiting') ? 'waiting' : sts.some(x => x === 'running' || x === 'stalled') ? 'running'
+  : sts.every(x => x === 'pending') ? 'pending' : 'done';
+const sum = (ts, k) => ts.reduce((a, t) => a + (t.n[k] || 0), 0);
 
-function forceItems(v, turns, hubNote) {
-  // session -> questions -> the agents started under each (pipelines: hub -> stages, chained per lane)
-  const hub = {key: 'hub', n: {label: turns ? 'Session' : 'Orchestrator', type: 'main session', hub: true, usd: v.usd}}, items = [hub];
-  const add = (key, parent, n) => items.push({key, parent, n});
-  if (v.p) v.p.lanes.forEach((l, li) => l.stages.forEach((n, si) => add(`p:${li}:${si}`, si ? `p:${li}:${si - 1}` : 'hub', n)));
-  else if (turns) turnCols(v.g).forEach(t => { add(keyOf(t), 'hub', t); t.agents.forEach(a => { const n = agentNode(a); add(keyOf(n), keyOf(t), n); }); });
-  else v.g.nodes.forEach(a => { const n = agentNode(a); add(keyOf(n), 'hub', n); });
-  const states = items.map(i => i.n.state);
-  hub.n.state = hubNote || states.includes('waiting') ? 'waiting' : states.includes('running') ? 'running' : 'done';
-  hub.n.last = hubNote ? `⏸ ${hubNote}` : turns ? `${v.g.turns.filter(t => t.state !== 'pending').length + (v.g.earlier || 0)} questions` : 'main session';
-  return items;
+function toggles(sid) {
+  if (!treeOpen[sid]) try { treeOpen[sid] = JSON.parse(localStorage.getItem(`agentmon.tree.${sid}`)) || {}; } catch (e) { treeOpen[sid] = {}; }
+  return treeOpen[sid];
 }
 
-function forceUpdate(sid, items) {
-  const svg = document.getElementById('graph');
-  if (!F || F.sid !== sid) {
-    stopForce();
-    svg.replaceChildren();
-    svg.removeAttribute('viewBox');
-    svg.style.height = `${Math.round(Math.max(320, Math.min(560, innerHeight * 0.6)))}px`;
-    F = {sid, nodes: new Map(), edges: new Map(), alpha: 1, raf: 0, eg: el('g', {}, svg), pg: el('g', {}, svg), ng: el('g', {}, svg)};
-    auto = true;
-  }
-  const keep = new Set(items.map(i => i.key));
-  let changed = false;
-  for (const [k, d] of F.nodes) if (!keep.has(k)) { d.g.remove(); F.nodes.delete(k); changed = true; }
-  for (const [k, e] of F.edges) if (!keep.has(k)) { e.line.remove(); e.dots.forEach(p => p.c.remove()); F.edges.delete(k); }
-  items.forEach(({key, parent, n}) => {
-    let d = F.nodes.get(key);
-    if (!d) {  // new: start next to its parent so it grows out of it
-      const p = F.nodes.get(parent), a = Math.random() * 2 * Math.PI;
-      d = {key, x: p ? p.x + 30 * Math.cos(a) : 0, y: p ? p.y + 30 * Math.sin(a) : 0, vx: 0, vy: 0, fx: null, fy: null,
-           g: el('g', {tabindex: 0, role: 'button', 'data-key': key}, F.ng)};
-      d.halo = el('circle', {class: 'halo'}, d.g);
-      d.dot = el('circle', {class: 'dot'}, d.g);
-      d.label = el('text', {class: 'flabel', 'text-anchor': 'middle'}, d.g);
-      F.nodes.set(key, d);
-      changed = true;
-    }
-    d.n = n; d.r = radius(n);
-    d.g.setAttribute('class', `node fnode ${n.state}${n.hub ? ' hub' : ''}${n.errors ? ' errs' : ''}${key === openKey ? ' sel' : ''}`);
-    d.g.setAttribute('aria-label', `${n.label}, ${STATE_TXT[n.state] || n.state}`);
-    d.halo.setAttribute('r', d.r); d.dot.setAttribute('r', d.r);
-    d.label.setAttribute('y', d.r + 14);
-    d.label.textContent = cut(n.label, n.hub ? 30 : 22);
-    const p = F.nodes.get(parent);
-    if (!p) return;
-    let e = F.edges.get(key);
-    if (!e) F.edges.set(key, e = {a: p, b: d, line: el('line', {}, F.eg), dots: []});
-    e.line.setAttribute('class', `fedge ${n.state === 'running' ? 'active' : n.state === 'done' ? 'done' : ''}`);
-    const flow = n.state === 'running' && !reduced.matches;  // particles flow into running agents
-    if (flow && !e.dots.length) e.dots = [0, 1 / 3, 2 / 3].map(t => ({t, c: el('circle', {r: 3, class: 'packet'}, F.pg)}));
-    if (!flow && e.dots.length) { e.dots.forEach(p => p.c.remove()); e.dots = []; }
+function buildTree(v, hubNote) {
+  const byId = new Map((v.g ? v.g.nodes : []).map(a => [a.id, a])), seen = new Set();
+  const mk = (tk, dk, n, kids = []) => { while (seen.has(tk)) tk += '+'; seen.add(tk); return {tk, dk: dk || tk, n, kids}; };
+  const lanes = (v.g ? v.g.lanes : v.p ? v.p.lanes : []).map(l => {
+    const lk = `l:${l.name}`;
+    const kids = l.stages.map((s, j) => {
+      const sk = `${lk}/${j}`, ags = (s.ids || []).map(id => byId.get(id)).filter(Boolean);
+      if (ags.length < 2) return mk(sk, s.id && `a:${s.id}`, {...s});
+      return mk(sk, '', {...s, type: 'stage'}, ags.map(a => { const n = agentNode(a); return mk(`${sk}/${a.id}`, keyOf(n), n); }));
+    });
+    const ls = kids.flatMap(leaves), live = ls.find(t => LIVE.includes(t.n.state));
+    return mk(lk, '', {label: l.name, type: 'lane', state: l.state || aggState(ls.map(t => t.n.state)), usd: l.usd, elapsed: l.elapsed,
+                       tools: sum(ls, 'tools'), last: live ? live.n.last : `${ls.filter(t => t.n.state === 'done').length}/${ls.length} done`}, kids);
   });
-  if (changed) F.alpha = Math.max(F.alpha, 0.3);
-  drawn = items.map(i => ({n: i.n, key: i.key, g: F.nodes.get(i.key).g}));
-  kick();
+  const st = hubNote ? 'waiting' : aggState(lanes.map(t => t.n.state));
+  return mk('root', 'hub', {label: 'Session', hub: true, type: 'main session', state: lanes.length ? st : 'done', ask: hubNote,
+                            usd: v.usd, tools: sum(lanes, 'tools'), elapsed: Math.max(0, ...lanes.map(t => t.n.elapsed || 0)),
+                            last: `${lanes.length} lane${lanes.length === 1 ? '' : 's'}`}, lanes);
 }
 
-function stepForce() {
-  const ns = [...F.nodes.values()], a = F.alpha;
-  for (let i = 0; i < ns.length; i++) for (let j = i + 1; j < ns.length; j++) {  // repulsion, plus no overlap
-    const p = ns[i], q = ns[j], dx = q.x - p.x || 0.1, dy = q.y - p.y, d2 = Math.max(dx * dx + dy * dy, 25), d = Math.sqrt(d2);
-    let f = 250 * a / d2;
-    const gap = p.r + q.r + 14 - d;
-    if (gap > 0) f += gap / d * 0.5;
-    p.vx -= dx * f; p.vy -= dy * f; q.vx += dx * f; q.vy += dy * f;
-  }
-  for (const {a: p, b: q} of F.edges.values()) {  // springs
-    const dx = q.x - p.x, dy = q.y - p.y, d = Math.hypot(dx, dy) || 1, f = (d - (30 + p.r + q.r)) / d * 0.1 * a;
-    q.vx -= dx * f; q.vy -= dy * f; p.vx += dx * f; p.vy += dy * f;
-  }
-  for (const n of ns) {
-    const c = n.n.hub ? 0.1 : 0.02;  // the session stays in the centre
-    n.vx = (n.vx - n.x * c * a) * 0.6; n.vy = (n.vy - n.y * c * a) * 0.6;
-    if (n.fx != null) { n.x = n.fx; n.y = n.fy; n.vx = n.vy = 0; } else { n.x += n.vx; n.y += n.vy; }
-  }
-  F.alpha *= 0.985;
+function newCard(t) {
+  const g = el('g', {}, T.ng), card = el('g', {tabindex: 0, role: 'button'}, g);
+  const d = {g, card, edge: t.anc.length ? el('path', {}, T.eg) : null};
+  el('rect', {class: 'box', width: TW, height: TH, rx: 10}, card);
+  [['title', 22], ['meta', 41], ['doing', 59], ['sub', 76]].forEach(([c, y]) => { d[c] = el('text', {x: 12, y, class: c}, card); });
+  d.tog = el('g', {class: 'tog', tabindex: 0, role: 'button', transform: `translate(${TW},${TH / 2})`}, g);
+  el('circle', {r: 11}, d.tog);
+  d.arrow = el('text', {'text-anchor': 'middle', y: 5}, d.tog);
+  d.badge = el('text', {class: 'badge', x: TW + 18, y: TH / 2 + 5}, g);
+  T.nodes.set(t.tk, d);
+  return d;
 }
 
-function frame() {
-  F.raf = 0;
-  const moving = F.alpha > 0.004 || ndrag;
-  if (moving) stepForce();
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, dots = false;
-  for (const n of F.nodes.values()) {
-    n.g.setAttribute('transform', `translate(${n.x.toFixed(1)},${n.y.toFixed(1)})`);
-    x0 = Math.min(x0, n.x - n.r - 50); x1 = Math.max(x1, n.x + n.r + 50); y0 = Math.min(y0, n.y - n.r - 10); y1 = Math.max(y1, n.y + n.r + 24);
+function fillCard(d, t) {
+  const n = t.n;
+  d.card.setAttribute('class', `node ${n.state}${t.dk === openKey ? ' sel' : ''}`);
+  d.card.dataset.key = t.dk;
+  d.card.setAttribute('aria-label', `${n.label}, ${STATE_TXT[n.state] || n.state}`);
+  d.title.textContent = cut(n.label, 28);
+  d.meta.textContent = cut(`${n.type || 'stage'} · ${ICON[n.state] || '○'} ${STATE_TXT[n.state] || n.state}`, n.errors ? 22 : 33);
+  if (n.errors) el('tspan', {class: 'errs'}, d.meta).textContent = ` · ${n.errors} err`;
+  d.doing.textContent = cut(nodeDoing(n), 29);
+  d.sub.textContent = subText(n);
+  const ec = `edge ${n.state === 'running' || n.state === 'stalled' ? 'active' : n.state === 'waiting' ? 'wait' : n.state === 'done' ? 'done' : ''}`;
+  if (d.edge && d.edge.getAttribute('class') !== ec) {  // finished links go underneath, so a shared trunk shows the live colour
+    d.edge.setAttribute('class', ec);
+    if (n.state === 'done') T.eg.prepend(d.edge); else T.eg.append(d.edge);
   }
-  for (const {a, b, line, dots: ps} of F.edges.values()) {
-    line.setAttribute('x1', a.x); line.setAttribute('y1', a.y); line.setAttribute('x2', b.x); line.setAttribute('y2', b.y);
-    for (const p of ps) {
-      p.t = (p.t + 0.008) % 1;
-      p.c.setAttribute('cx', a.x + (b.x - a.x) * p.t); p.c.setAttribute('cy', a.y + (b.y - a.y) * p.t);
-      dots = true;
+  d.tog.style.display = t.kids.length ? '' : 'none';
+  d.tog.dataset.tk = t.tk;
+  d.tog.setAttribute('aria-expanded', t.open);
+  d.tog.setAttribute('aria-label', `${t.open ? 'Collapse' : 'Expand'} ${n.label}`);
+  d.arrow.textContent = t.open ? '▾' : '▸';
+  d.badge.replaceChildren();
+  if (!t.kids.length || t.open) return;
+  const cnt = {};  // folded: what is underneath, e.g. 5 ✓ · 1 ◔
+  leaves(t).forEach(l => { cnt[l.n.state] = (cnt[l.n.state] || 0) + 1; });
+  Object.keys(cnt).sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b)).forEach((k, i) => {
+    if (i) d.badge.append(' · ');
+    el('tspan', {class: k}, d.badge).textContent = `${cnt[k]} ${ICON[k] || '○'}`;
+  });
+}
+const ORDER = ['done', 'running', 'stalled', 'waiting', 'error', 'failed', 'pending'];
+
+function treeUpdate(sid, root) {
+  const svg = document.getElementById('graph');
+  if (!T || T.sid !== sid) {
+    stopTree();
+    svg.replaceChildren();
+    T = {sid, nodes: new Map(), eg: el('g', {}, svg), ng: el('g', {}, svg), raf: 0};
+    vb = null; auto = true;
+  }
+  T.root = root;
+  const open = toggles(sid), vis = [], all = [];
+  let rows = 0, depth = 0;
+  const place = (t, dep, anc) => {  // tidy tree: each shown leaf gets a row, a parent lines up with its first child (stays in view)
+    t.anc = anc;
+    t.open = !!t.kids.length && (open[t.tk] ?? (!dep || t.kids.some(isActive)));
+    if (t.open) { t.kids.forEach(c => place(c, dep + 1, [t.tk, ...anc])); t.y = t.kids[0].y; }
+    else t.y = 10 + rows++ * TROW;
+    t.x = 10 + dep * (TW + TGX);
+    depth = Math.max(depth, dep);
+    vis.push(t);
+  };
+  place(root, 0, []);
+  const shown = new Map(vis.map(t => [t.tk, t]));
+  let moved = false;
+  for (const t of vis) {  // children come before parents here, so a new card grows out of its nearest old ancestor
+    let d = T.nodes.get(t.tk);
+    if (!d) {
+      const p = t.anc.map(k => T.nodes.get(k)).find(Boolean) || t;
+      d = newCard(t);
+      Object.assign(d, {x: p.x, y: p.y, enter: true});
     }
+    Object.assign(d, {t, gone: false, fx: d.x, fy: d.y, tx: t.x, ty: t.y});
+    if (d.x !== t.x || d.y !== t.y) moved = true;
+    fillCard(d, t);
   }
-  content = {x: x0, y: y0, w: x1 - x0, h: y1 - y0};
-  if (moving && auto && !ndrag) fit(0); else if (!vb) fit(0);
-  if (moving || dots) F.raf = requestAnimationFrame(frame);  // idle and nothing running: no frames at all
+  for (const d of T.nodes.values()) if (!shown.has(d.t.tk) && !d.gone) {  // folded away: shrink into the shown ancestor
+    const p = d.t.anc.map(k => shown.get(k)).find(Boolean) || d;
+    Object.assign(d, {gone: true, fx: d.x, fy: d.y, tx: p.x, ty: p.y});
+    moved = true;
+  }
+  const walk = t => { all.push(t); t.kids.forEach(walk); };
+  walk(root);
+  drawn = all.map(t => { const d = shown.has(t.tk) && T.nodes.get(t.tk); return d ? {n: t.n, key: t.dk, g: d.card, sub: d.sub, doing: d.doing, chars: 29} : {n: t.n, key: t.dk, g: h('i')}; });
+  if (!moved && vb) return;
+  content = {x: 0, y: 0, w: 20 + (depth + 1) * (TW + TGX) + 60, h: 20 + rows * TROW - (TROW - TH)};
+  svg.style.height = `${Math.round(Math.max(300, Math.min(content.h * autoK + 20, innerHeight * 0.75)))}px`;
+  if (auto || !vb) fit(autoK);
+  T.start = performance.now();
+  if (!T.raf) T.raf = requestAnimationFrame(treeFrame);
 }
-const kick = () => { if (F && !F.raf) F.raf = requestAnimationFrame(frame); };
-function stopForce() { if (F && F.raf) cancelAnimationFrame(F.raf); F = null; }
+
+function treeFrame(now) {
+  const k = reduced.matches ? 1 : Math.min(1, (now - T.start) / 280), e = 1 - (1 - k) ** 3;
+  for (const d of T.nodes.values()) {
+    d.x = d.fx + (d.tx - d.fx) * e; d.y = d.fy + (d.ty - d.fy) * e;
+    d.g.setAttribute('transform', `translate(${d.x},${d.y})`);
+    d.g.style.opacity = k < 1 && (d.gone || d.enter) ? (d.gone ? 1 - e : e) : '';
+  }
+  for (const d of T.nodes.values()) {
+    const p = d.edge && T.nodes.get(d.t.anc[0]);
+    if (!p) continue;
+    // rounded elbow: siblings share one trunk instead of a fan of crossing curves
+    const y1 = p.y + TH / 2, y2 = d.y + TH / 2, x1 = p.x + TW, x2 = d.x, m = (x1 + x2) / 2, dy = y2 - y1;
+    const r = Math.min(12, Math.abs(dy) / 2) * Math.sign(dy);
+    d.edge.setAttribute('d', `M${x1},${y1} H${m - Math.abs(r)} Q${m},${y1} ${m},${y1 + r} V${y2 - r} Q${m},${y2} ${m + Math.abs(r)},${y2} H${x2}`);
+    d.edge.style.opacity = d.g.style.opacity;
+  }
+  if (k < 1) { T.raf = requestAnimationFrame(treeFrame); return; }
+  T.raf = 0;
+  for (const [key, d] of T.nodes) {
+    d.enter = false;
+    if (d.gone) { d.g.remove(); if (d.edge) d.edge.remove(); T.nodes.delete(key); }
+  }
+}
+function stopTree() { if (T && T.raf) cancelAnimationFrame(T.raf); T = null; }
+
+function treeFold(f) {  // f(node) -> true / false / undefined (leave as is), over every node with children
+  if (!T) return;
+  const open = toggles(T.sid), each = t => { const o = t.kids.length && f(t); if (o !== undefined && t.kids.length) open[t.tk] = o; t.kids.forEach(each); };
+  each(T.root);
+  try { localStorage.setItem(`agentmon.tree.${T.sid}`, JSON.stringify(open)); } catch (e) {}
+  treeUpdate(T.sid, T.root);
+}
+const treeToggle = tk => treeFold(t => t.tk === tk ? !t.open : undefined);
 
 function tick() {  // live clocks and "now doing" lines without re-rendering (keeps animations smooth)
   const extra = (Date.now() - fetchedAt) / 1000;
-  drawn.forEach(({n, sub, doing, w}) => {
+  drawn.forEach(({n, sub, doing, chars}) => {
     if (sub && n.state === 'running') sub.textContent = subText(n, extra);
-    if (doing) doing.textContent = cut(nodeDoing(n), Math.floor((w - 50) / 6.6));
+    if (doing) doing.textContent = chars ? cut(nodeDoing(n), chars) : nodeDoing(n);
   });
+  laneClocks.forEach(({el, l}) => { el.textContent = laneMeta(l, extra); });
+}
+
+/* lanes board: one row per lane (server-side `lanes`); live lanes open on top, finished ones fold to a line of chips */
+const laneOpen = new Map();  // session|lane -> open, once you toggle it; survives the 2 s polls
+let laneClocks = [];
+const ICON = {done: '✓', running: '◔', stalled: '◔', waiting: '⏸', error: '✗', failed: '✗'};
+const GROUP = {running: '● Running', waiting: '● Running', done: 'Finished', pending: 'Not started'};
+const laneMeta = (l, extra = 0) => [l.usd ? `$${l.usd.toFixed(2)}` : '', l.elapsed ? fmt(l.elapsed + (GROUP[l.state] === GROUP.running ? extra : 0)) : ''].filter(Boolean).join(' · ');
+
+function renderLanes(lanes) {
+  const board = document.getElementById('board'), f = document.activeElement;
+  const refocus = board.contains(f) && (f.dataset.key || f.dataset.lane);
+  const parts = [];
+  drawn = []; laneClocks = [];
+  if (!lanes.length) parts.push(h('p', 'now', 'No subagents in this session yet.'));
+  lanes.forEach((l, i) => {
+    if (!i || GROUP[l.state] !== GROUP[lanes[i - 1].state]) parts.push(h('h4', GROUP[l.state] === GROUP.running ? 'live' : '', GROUP[l.state] || l.state));
+    const lk = `${selected}|${l.name}`, live = GROUP[l.state] === GROUP.running;
+    const open = laneOpen.has(lk) ? laneOpen.get(lk) : live;
+    const row = h('div', 'lane'), head = h('button', 'lhead'), meta = h('span', 'lmeta', laneMeta(l));
+    head.dataset.lane = lk;
+    head.setAttribute('aria-expanded', open);
+    head.append(h('span', 'caret', open ? '▾' : '▸'), h('span', 'lname', l.name));
+    head.onclick = () => { laneOpen.set(lk, !open); renderLanes(lanes); };
+    if (live) laneClocks.push({el: meta, l});
+    const box = h('div', open ? 'cards' : 'chips');
+    l.stages.forEach((s, j) => box.append(stageEl(l, s, j, open)));
+    row.append(head, ...(open ? [meta, box] : [box, meta]));
+    parts.push(row);
+  });
+  board.replaceChildren(...parts);
+  const back = refocus && [...board.querySelectorAll('[data-key],[data-lane]')].find(e => (e.dataset.key || e.dataset.lane) === refocus);
+  if (back) back.focus({preventScroll: true});
+}
+
+function stageEl(l, s, j, card) {
+  const key = s.id ? `a:${s.id}` : `s:${l.name}:${j}`, n = {...s}, ic = h('span', 'ic', ICON[s.state] || '○');
+  const b = h('button', `${card ? 'scard' : 'chip'} ${s.state}${key === openKey ? ' sel' : ''}`), d = {n, key, g: b};
+  b.dataset.key = key;
+  if (!card) {
+    b.title = `${s.label} · ${STATE_TXT[s.state] || s.state}`;
+    b.append(ic, cut(s.label, 32));
+  } else {
+    const t = h('b'), m = h('small', '', nodeMeta(n));
+    t.append(ic, s.label);
+    if (s.errors) m.append(h('span', 'errs', ` · ${s.errors} err`));
+    b.append(t, m);
+    if (s.desc && s.desc !== s.label) b.append(h('small', '', s.desc));
+    if (s.last || !['done', 'pending'].includes(s.state)) b.append(d.doing = h('span', 'doing', nodeDoing(n)));
+    b.append(d.sub = h('small', '', subText(n)));
+  }
+  b.onclick = () => openDetail(d);
+  drawn.push(d);
+  return b;
 }
 
 function views(s) {
@@ -557,7 +689,7 @@ function views(s) {
 
 function showGraph(s) {
   const vs = views(s);
-  if (!vs.length) { stopForce(); document.getElementById('tabs').replaceChildren(); document.getElementById('graph').replaceChildren(); document.getElementById('now').replaceChildren(); document.getElementById('psub').textContent = ''; drawn = []; sig = ''; document.getElementById('ptitle').textContent = 'No live sessions'; updateCards('<p>No live sessions in the watched repos. Sessions show here while they or their agents are working.</p>'); return; }
+  if (!vs.length) { stopTree(); document.getElementById('tabs').replaceChildren(); document.getElementById('graph').replaceChildren(); document.getElementById('board').replaceChildren(); document.getElementById('now').replaceChildren(); document.getElementById('psub').textContent = ''; drawn = []; sig = ''; document.getElementById('ptitle').textContent = 'No live sessions'; updateCards('<p>No live sessions in the watched repos. Sessions show here while they or their agents are working.</p>'); return; }
   if (!vs.some(v => v.id === selected)) selected = vs[0].id;
   const tabs = document.getElementById('tabs');
   tabs.replaceChildren(...vs.map(v => {
@@ -579,7 +711,8 @@ function showGraph(s) {
   const data = v.p ? v.p.lanes.flatMap(l => l.stages) : turns ? turnFlat(v.g) : v.g.nodes;
   const hubNote = v.g ? v.g.note : '';
   const newSig = selected + hubNote + JSON.stringify(data.map(n => [n.label || n.desc, n.state || n.status, n.note]));
-  if (view === 'force') forceUpdate(selected, forceItems(v, turns, hubNote));
+  if (view === 'lanes') renderLanes(v.g ? v.g.lanes : []);
+  else if (view === 'tree') treeUpdate(selected, buildTree(v, hubNote));
   else if (newSig !== sig) {
     sig = newSig;
     const L = v.p ? layoutPipeline(v.p) : turns ? layoutTurns(v.g) : layoutAuto(v.g);
@@ -629,7 +762,7 @@ const ktok = n => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.rou
 function openDetail(d) {
   openKey = d.key;
   detail = null;
-  document.querySelectorAll('#graph .node.sel').forEach(g => g.classList.remove('sel'));
+  document.querySelectorAll('[data-key].sel').forEach(g => g.classList.remove('sel'));
   d.g.classList.add('sel');
   const dr = document.getElementById('drawer');
   dr.classList.add('open');
@@ -640,10 +773,10 @@ function openDetail(d) {
 }
 
 function closeDetail() {
-  const dr = document.getElementById('drawer'), g = document.querySelector(`#graph .node[data-key="${CSS.escape(openKey || '')}"]`);
+  const dr = document.getElementById('drawer'), g = document.querySelector(`[data-key="${CSS.escape(openKey || '')}"]`);
   dr.classList.remove('open');
   dr.setAttribute('aria-hidden', 'true');
-  document.querySelectorAll('#graph .node.sel').forEach(g => g.classList.remove('sel'));
+  document.querySelectorAll('[data-key].sel').forEach(g => g.classList.remove('sel'));
   openKey = detail = null;
   if (g) g.focus();
 }

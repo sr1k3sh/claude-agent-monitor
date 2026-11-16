@@ -429,7 +429,7 @@ def pipeline(rows, spec):
         stages = []
         for s in lane["stages"]:
             hits = [a for a in rows if a["kind"] == "sub" and s.get("match") and s["match"].lower() in a["desc"].lower()]
-            node = {"label": s["label"], "id": hits[-1]["id"] if hits else "", "tools": sum(a["tools"] for a in hits), "elapsed": 0, "last": "",
+            node = {"label": s["label"], "id": hits[-1]["id"] if hits else "", "ids": [a["id"] for a in hits], "tools": sum(a["tools"] for a in hits), "elapsed": 0, "last": "",
                     "usd": round(sum(a["tok"]["usd"] for a in hits), 2)}
             if s.get("manual"):
                 node.update(state=s["manual"], note=s.get("note", ""))
@@ -512,12 +512,50 @@ def turn_nodes(m, subs):
         if host is not None:
             host["agents"].append(a)
     earlier = max(0, len(out) - MAX_TURNS)
-    out = out[earlier:] + [{"label": q, "state": "pending", "tools": 0, "usd": 0, "elapsed": 0, "last": "",
-                            "note": "queued", "agents": []} for q in m["queued"]]
-    return out, earlier
+    return out[earlier:] + [{"label": q, "state": "pending", "tools": 0, "usd": 0, "elapsed": 0, "last": "",
+                             "note": "queued", "agents": []} for q in m["queued"]], earlier, out
 
 
-def graphs(rows):
+LANE_ORDER = {"running": 0, "waiting": 1, "done": 2, "pending": 3}
+
+
+def stage(a):
+    """A board stage for one agent node."""
+    return {"label": a["desc"], "state": a["status"].rstrip("?"), "ask": a["note"]} | {
+        k: a[k] for k in ("id", "desc", "type", "last", "elapsed", "usd", "tools", "errors")}
+
+
+def lanes(nodes, turns, pipe=None):
+    """Board rows for one session: the pipeline's lanes, else one per question that started agents; agents that
+    nothing claims go in 'Other'. Ordered running, waiting, most recently finished, then not started."""
+    by_id, rows, claimed = {a["id"]: a for a in nodes}, [], set()
+    if pipe:
+        for lane in pipe["lanes"]:
+            ids = {i for s in lane["stages"] for i in s["ids"] if i in by_id}
+            stages = [s | {k: by_id[s["id"]][k] for k in ("desc", "type", "errors")} if s["id"] in by_id else s
+                      for s in lane["stages"]]
+            rows.append((lane["name"], stages, [by_id[i] for i in ids], ""))
+            claimed |= ids
+    else:
+        for t in turns:
+            if t["agents"]:
+                rows.append((t["label"], [stage(a) for a in t["agents"]], t["agents"], t["state"]))
+                claimed |= {a["id"] for a in t["agents"]}
+    rest = [a for a in nodes if a["id"] not in claimed]
+    if rest:
+        rows.append(("Other", [stage(a) for a in rest], rest, ""))
+    out = []
+    for name, stages, ags, turn_state in rows:
+        sts = {s["state"] for s in stages} | {turn_state}  # a question still being worked on keeps its lane live
+        state = ("waiting" if "waiting" in sts else "running" if sts & {"running", "stalled"}
+                 else "pending" if sts <= {"pending", ""} else "done")
+        end = max((a["t1"] for a in ags), default=0)
+        out.append({"name": name, "state": state, "stages": stages, "usd": round(sum(a["usd"] for a in ags), 2),
+                    "elapsed": int(end - min(a["t0"] for a in ags)) if ags else 0, "end": end})
+    return sorted(out, key=lambda l: (LANE_ORDER[l["state"]], -l["end"] if l["state"] == "done" else 0))
+
+
+def graphs(rows, pipes=()):
     """One orchestration graph per session that spawned subagents (session = parent dir of subagents/)."""
     mains = {a["session"]: a for a in rows if a["kind"] == "main"}
     by = {sid: [] for sid in mains}
@@ -529,7 +567,7 @@ def graphs(rows):
         m = mains.get(sid)
         nodes = [{k: a[k] for k in ("id", "desc", "type", "status", "note", "tools", "errors", "elapsed", "t0", "t1", "last")}
                  | {"usd": round(a["tok"]["usd"], 2)} for a in sorted(subs, key=lambda a: a["t0"])]
-        turns, earlier = turn_nodes(m, nodes) if m and m["turns"] else ([], 0)
+        turns, earlier, every = turn_nodes(m, nodes) if m and m["turns"] else ([], 0, [])
         out.append({
             "session": sid, "project": (m or subs[0])["project"], "turns": turns, "earlier": earlier,
             "title": m["desc"] if m else f"session {sid}",
@@ -539,6 +577,7 @@ def graphs(rows):
             "mtime": max([a["mtime"] for a in subs + ([m] if m else [])]),
             "usd": round(sum(a["tok"]["usd"] for a in subs), 2),
             "nodes": nodes,
+            "lanes": lanes(nodes, every, next((p for p in pipes if p["session"] == sid), None)),
         })
     return sorted(out, key=lambda g: (not g["live"], -g["mtime"]))
 
@@ -554,7 +593,7 @@ def state():
     pipes = [p for p in pipes if p["session"] in live]
     counts = {s: sum(a["status"] == s for a in rows) for s in ("waiting", "active", "running", "stalled?", "idle", "done")}
     counts["usd"] = round(sum(a["tok"]["usd"] for a in rows), 2)
-    return {"pipelines": pipes, "graphs": graphs(rows), "cards": cards_by_session(rows), "counts": counts,
+    return {"pipelines": pipes, "graphs": graphs(rows, pipes), "cards": cards_by_session(rows), "counts": counts,
             "hide_after_min": HIDE_S / 60, "scopes": [os.path.basename(d) for d in scopes()]}
 
 

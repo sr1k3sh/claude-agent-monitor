@@ -101,6 +101,31 @@ class AgentMonitorTests(unittest.TestCase):
         self.assertEqual([n["state"] for n in p["lanes"][0]["stages"]], ["done", "running", "pending", "waiting"])
         self.assertAlmostEqual(p["lanes"][0]["stages"][0]["usd"], 4.0)
 
+    def test_board_lanes_from_pipeline(self):
+        g = next(g for g in self.m.state()["graphs"] if g["session"] == "abcdef12")
+        [lane] = g["lanes"]  # both agents match a stage: no Other lane
+        self.assertEqual((lane["name"], lane["state"]), ("L", "waiting"))  # the manual OK stage waits on you
+        self.assertEqual([s["state"] for s in lane["stages"]], ["done", "running", "pending", "waiting"])
+        self.assertEqual(lane["stages"][0]["type"], "Plan")
+        self.assertAlmostEqual(lane["usd"], 8.0)
+
+    def test_board_lanes_by_question_other_and_order(self):
+        node = lambda i, status, t0, t1: {"id": i, "desc": f"task {i}", "type": "Explore", "status": status, "note": "",
+                                          "last": "", "elapsed": 0, "usd": 1.0, "tools": 1, "errors": 0, "t0": t0, "t1": t1}
+        a, b, c, d, e = (node("a", "done", 0, 10), node("b", "done", 20, 50), node("c", "running", 60, 99),
+                         node("d", "done", 5, 30), node("x", "stalled?", 1, 2))
+        turns = [{"label": "old", "state": "done", "agents": [a]}, {"label": "recent", "state": "done", "agents": [d, b]},
+                 {"label": "live", "state": "done", "agents": [c]}, {"label": "no agents", "state": "running", "agents": []}]
+        lanes = self.m.lanes([a, b, c, d, e], turns)
+        self.assertEqual([(l["name"], l["state"]) for l in lanes],
+                         [("live", "running"), ("Other", "running"), ("recent", "done"), ("old", "done")])
+        self.assertEqual([s["label"] for s in lanes[2]["stages"]], ["task d", "task b"])
+        self.assertEqual((lanes[2]["usd"], lanes[2]["elapsed"]), (2.0, 45))
+        self.assertEqual(lanes[1]["stages"][0]["state"], "stalled")
+        turns[0]["state"] = "waiting"  # the question itself is waiting on you, its agent long done
+        self.assertEqual(self.m.lanes([a], turns[:1])[0]["state"], "waiting")
+        self.assertEqual(self.m.lanes([], []), [])
+
     def test_only_scope_repo_and_its_worktrees(self):
         titles = {a["desc"] for a in self.m.agents() if a["kind"] == "main"}
         self.assertEqual(titles, {"add offline sync", "worktree work"})
