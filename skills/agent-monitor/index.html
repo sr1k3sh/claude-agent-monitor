@@ -100,6 +100,23 @@ li.text{color:var(--text)} li.error{color:var(--err)}
 .pill{display:inline-block;border-radius:999px;padding:1px 8px;font-size:11px;font-weight:600;color:#fff;background:var(--muted);margin-right:4px}
 .pill.running{background:var(--run)} .pill.done{background:var(--done)} .pill.waiting,.pill.stalled{background:var(--wait)} .pill.err{background:var(--err)}
 li .ok{color:var(--done)} li .bad{color:var(--err)} li b{color:var(--fg)}
+/* force graph view: circles sized by cost, coloured by state */
+.fedge{stroke:var(--edge);stroke-width:1.5}
+.fedge.done{stroke:color-mix(in srgb,var(--done) 50%,var(--edge))}
+.fedge.active{stroke:var(--run);stroke-width:2}
+.fnode .dot{fill:var(--card);stroke:var(--edge);stroke-width:2;stroke-dasharray:4 3}
+.fnode.done .dot{fill:var(--done);stroke:var(--done);stroke-dasharray:none}
+.fnode.running .dot{fill:var(--run);stroke:var(--run);stroke-dasharray:none}
+.fnode.waiting .dot,.fnode.stalled .dot{fill:var(--wait);stroke:var(--wait);stroke-dasharray:none}
+.fnode.errs .dot{stroke:var(--err);stroke-width:3.5}
+.fnode.hub .dot{fill:var(--card);stroke-width:5}
+.fnode .halo{fill:none;stroke:none;opacity:0;transform-box:fill-box;transform-origin:center}
+.fnode.running .halo{stroke:var(--run);stroke-width:2;animation:pulse 1.6s ease-out infinite}
+.fnode.waiting .halo{stroke:var(--wait);stroke-width:2;animation:pulse 1.6s ease-out infinite}
+@keyframes pulse{0%{opacity:.8;transform:scale(.85)}100%{opacity:0;transform:scale(1.6)}}
+.fnode .flabel{font-size:11px;fill:var(--muted);paint-order:stroke;stroke:var(--bg);stroke-width:3px;stroke-linejoin:round}
+.fnode.hub .flabel{font-size:12px;font-weight:600;fill:var(--fg)}
+.fnode:hover .dot,.fnode:focus-visible .dot,.fnode.sel .dot{stroke:var(--fg);stroke-width:3;stroke-dasharray:none}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important}}
 </style>
 </head>
@@ -110,7 +127,7 @@ li .ok{color:var(--done)} li .bad{color:var(--err)} li b{color:var(--fg)}
   <h3><span id="ptitle">Orchestration</span><span class="ptitle-sub" id="psub"></span></h3>
   <div id="graphwrap">
     <svg id="graph" role="group" aria-label="Orchestration graph: click a node for details, drag to pan, wheel to zoom"></svg>
-    <div class="zoom"><button id="zin" title="Zoom in" aria-label="Zoom in">+</button><button id="zout" title="Zoom out" aria-label="Zoom out">−</button><button id="zfit" title="Fit the whole graph">Fit</button></div>
+    <div class="zoom"><button id="zin" title="Zoom in" aria-label="Zoom in">+</button><button id="zout" title="Zoom out" aria-label="Zoom out">−</button><button id="zfit" title="Fit the whole graph">Fit</button><button id="zview" title="Switch between the node graph and the flow view"></button></div>
   </div>
   <div class="now" id="now"></div>
   <div class="legend">
@@ -119,7 +136,7 @@ li .ok{color:var(--done)} li .bad{color:var(--err)} li b{color:var(--fg)}
     <span><i style="background:var(--wait)"></i>waiting on you / stalled</span>
     <span><i style="background:var(--err)"></i>has tool errors</span>
     <span><i style="border:1px dashed var(--muted)"></i>pending</span>
-    <span>click a node for details · drag to pan · wheel to zoom</span>
+    <span id="hint"></span>
   </div>
 </section>
 <div id="cards"></div>
@@ -274,7 +291,7 @@ const keyOf = n => n.id ? `a:${n.id}` : n.agents ? `q:${n.t0 || n.label}` : `p:$
 function draw(L) {
   const svg = document.getElementById('graph');
   svg.replaceChildren();
-  content = {w: L.width, h: L.height};
+  content = {x: 0, y: 0, w: L.width, h: L.height};
   svg.style.height = `${Math.round(Math.max(260, Math.min(L.height + 20, innerHeight * 0.7)))}px`;
   if (auto || !vb) fit(autoK); else setVB();
   const eg = el('g', {}, svg), pg = el('g', {}, svg), ng = el('g', {}, svg);
@@ -322,13 +339,13 @@ function draw(L) {
 }
 
 /* pan + zoom: the svg viewBox is the camera; auto = follow the graph until you move it yourself */
-let vb = null, content = {w: 1, h: 1}, auto = true, autoK = 0.75, drag = null, dragMoved = false;
+let vb = null, content = {x: 0, y: 0, w: 1, h: 1}, auto = true, autoK = 0.75, drag = null, dragMoved = false;
 function setVB() { document.getElementById('graph').setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`); }
 function fit(minK = 0) {
   const svg = document.getElementById('graph'), cw = svg.clientWidth || 900, ch = svg.clientHeight || 320;
   const k = Math.max(minK, Math.min(1.25, cw / content.w, ch / content.h));
   const w = cw / k, h = ch / k;
-  vb = {x: Math.min(0, (content.w - w) / 2), y: Math.min(0, (content.h - h) / 2), w, h};  // centre if small, else top-left
+  vb = {x: content.x + Math.min(0, (content.w - w) / 2), y: content.y + Math.min(0, (content.h - h) / 2), w, h};  // centre if small, else top-left
   setVB();
 }
 function zoom(f, cx, cy) {
@@ -342,9 +359,25 @@ function zoom(f, cx, cy) {
 }
 function initPanZoom() {
   const svg = document.getElementById('graph');
+  const nodeAt = e => { const g = e.target.closest && e.target.closest('.node'); return g && drawn.find(d => d.key === g.dataset.key); };
   svg.addEventListener('wheel', e => { e.preventDefault(); zoom(Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY); }, {passive: false});
-  svg.addEventListener('pointerdown', e => { if (e.button === 0) { drag = {x: e.clientX, y: e.clientY, vb: {...vb}}; dragMoved = false; } });
+  svg.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    dragMoved = false;
+    const d = F && nodeAt(e);  // graph view: dragging a node moves it, anywhere else pans
+    if (d) ndrag = {node: F.nodes.get(d.key), x: e.clientX, y: e.clientY};
+    else drag = {x: e.clientX, y: e.clientY, vb: {...vb}};
+  });
   addEventListener('pointermove', e => {
+    if (ndrag && (dragMoved || Math.hypot(e.clientX - ndrag.x, e.clientY - ndrag.y) >= 4)) {
+      const r = svg.getBoundingClientRect();
+      dragMoved = true;
+      svg.classList.add('dragging');
+      ndrag.node.fx = vb.x + (e.clientX - r.left) * vb.w / r.width;
+      ndrag.node.fy = vb.y + (e.clientY - r.top) * vb.h / r.height;
+      F.alpha = Math.max(F.alpha, 0.3);
+      kick();
+    }
     if (!drag) return;
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     if (!dragMoved && Math.hypot(dx, dy) < 4) return;  // a click, not a drag
@@ -354,18 +387,35 @@ function initPanZoom() {
     vb = {...drag.vb, x: drag.vb.x - dx * s, y: drag.vb.y - dy * s};
     setVB();
   });
-  addEventListener('pointerup', () => { drag = null; svg.classList.remove('dragging'); });
+  addEventListener('pointerup', () => {
+    if (ndrag) ndrag.node.fx = ndrag.node.fy = null;  // let go: it floats back into the layout
+    drag = ndrag = null;
+    svg.classList.remove('dragging');
+  });
   document.getElementById('zin').onclick = () => zoom(1.25);
   document.getElementById('zout').onclick = () => zoom(0.8);
   document.getElementById('zfit').onclick = () => { auto = true; autoK = 0; fit(0); };
+  const zv = document.getElementById('zview'), label = () => {
+    zv.textContent = view === 'force' ? 'Flow' : 'Graph';
+    document.getElementById('hint').textContent = `${view === 'force' ? 'circle size = cost · ' : ''}click a node for details · drag to pan${view === 'force' ? ' or move a node' : ''} · wheel to zoom`;
+  };
+  label();
+  zv.onclick = () => {
+    view = view === 'force' ? 'flow' : 'force';
+    try { localStorage.setItem('agentmon.view', view); } catch (e) {}
+    label();
+    stopForce();
+    svg.replaceChildren();
+    sig = ''; auto = true; autoK = view === 'force' ? 0 : 0.75;
+    if (last) showGraph(last);
+  };
   addEventListener('resize', () => auto ? fit(autoK) : (vb.h = vb.w * svg.clientHeight / svg.clientWidth, setVB()));
   // nodes: click / Enter opens the detail drawer, hover shows the summary
   const tip = document.getElementById('tip');
-  const nodeAt = e => { const g = e.target.closest && e.target.closest('.node'); return g && drawn.find(d => d.key === g.dataset.key); };
   svg.addEventListener('click', e => { const d = !dragMoved && nodeAt(e); if (d) { tip.classList.remove('on'); openDetail(d); } });
   svg.addEventListener('keydown', e => { const d = (e.key === 'Enter' || e.key === ' ') && nodeAt(e); if (d) { e.preventDefault(); openDetail(d); } });
   svg.addEventListener('pointermove', e => {
-    const d = e.pointerType !== 'touch' && !drag && nodeAt(e);
+    const d = e.pointerType !== 'touch' && !drag && !ndrag && nodeAt(e);
     tip.classList.toggle('on', !!d);
     if (!d) return;
     tip.textContent = [d.n.label, nodeMeta(d.n) + (d.n.errors ? ` · ${d.n.errors} tool errors` : ''), nodeDoing(d.n), subText(d.n)].join('\n');
@@ -374,6 +424,117 @@ function initPanZoom() {
   });
   svg.addEventListener('pointerleave', () => tip.classList.remove('on'));
 }
+
+/* graph view: a small force simulation (repulsion + spring links + centring, damped), drawn in the same svg.
+   Nodes keep their positions across polls; only added/removed nodes reheat it. */
+let view = 'force', F = null, ndrag = null;
+try { view = localStorage.getItem('agentmon.view') || 'force'; } catch (e) {}
+const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+const radius = n => n.hub ? 26 : Math.max(8, Math.min(24, 8 + Math.sqrt(n.usd || 0) * 6));
+
+function forceItems(v, turns, hubNote) {
+  // session -> questions -> the agents started under each (pipelines: hub -> stages, chained per lane)
+  const hub = {key: 'hub', n: {label: turns ? 'Session' : 'Orchestrator', type: 'main session', hub: true, usd: v.usd}}, items = [hub];
+  const add = (key, parent, n) => items.push({key, parent, n});
+  if (v.p) v.p.lanes.forEach((l, li) => l.stages.forEach((n, si) => add(`p:${li}:${si}`, si ? `p:${li}:${si - 1}` : 'hub', n)));
+  else if (turns) turnCols(v.g).forEach(t => { add(keyOf(t), 'hub', t); t.agents.forEach(a => { const n = agentNode(a); add(keyOf(n), keyOf(t), n); }); });
+  else v.g.nodes.forEach(a => { const n = agentNode(a); add(keyOf(n), 'hub', n); });
+  const states = items.map(i => i.n.state);
+  hub.n.state = hubNote || states.includes('waiting') ? 'waiting' : states.includes('running') ? 'running' : 'done';
+  hub.n.last = hubNote ? `⏸ ${hubNote}` : turns ? `${v.g.turns.filter(t => t.state !== 'pending').length + (v.g.earlier || 0)} questions` : 'main session';
+  return items;
+}
+
+function forceUpdate(sid, items) {
+  const svg = document.getElementById('graph');
+  if (!F || F.sid !== sid) {
+    stopForce();
+    svg.replaceChildren();
+    svg.removeAttribute('viewBox');
+    svg.style.height = `${Math.round(Math.max(320, Math.min(560, innerHeight * 0.6)))}px`;
+    F = {sid, nodes: new Map(), edges: new Map(), alpha: 1, raf: 0, eg: el('g', {}, svg), pg: el('g', {}, svg), ng: el('g', {}, svg)};
+    auto = true;
+  }
+  const keep = new Set(items.map(i => i.key));
+  let changed = false;
+  for (const [k, d] of F.nodes) if (!keep.has(k)) { d.g.remove(); F.nodes.delete(k); changed = true; }
+  for (const [k, e] of F.edges) if (!keep.has(k)) { e.line.remove(); e.dots.forEach(p => p.c.remove()); F.edges.delete(k); }
+  items.forEach(({key, parent, n}) => {
+    let d = F.nodes.get(key);
+    if (!d) {  // new: start next to its parent so it grows out of it
+      const p = F.nodes.get(parent), a = Math.random() * 2 * Math.PI;
+      d = {key, x: p ? p.x + 30 * Math.cos(a) : 0, y: p ? p.y + 30 * Math.sin(a) : 0, vx: 0, vy: 0, fx: null, fy: null,
+           g: el('g', {tabindex: 0, role: 'button', 'data-key': key}, F.ng)};
+      d.halo = el('circle', {class: 'halo'}, d.g);
+      d.dot = el('circle', {class: 'dot'}, d.g);
+      d.label = el('text', {class: 'flabel', 'text-anchor': 'middle'}, d.g);
+      F.nodes.set(key, d);
+      changed = true;
+    }
+    d.n = n; d.r = radius(n);
+    d.g.setAttribute('class', `node fnode ${n.state}${n.hub ? ' hub' : ''}${n.errors ? ' errs' : ''}${key === openKey ? ' sel' : ''}`);
+    d.g.setAttribute('aria-label', `${n.label}, ${STATE_TXT[n.state] || n.state}`);
+    d.halo.setAttribute('r', d.r); d.dot.setAttribute('r', d.r);
+    d.label.setAttribute('y', d.r + 14);
+    d.label.textContent = cut(n.label, n.hub ? 30 : 22);
+    const p = F.nodes.get(parent);
+    if (!p) return;
+    let e = F.edges.get(key);
+    if (!e) F.edges.set(key, e = {a: p, b: d, line: el('line', {}, F.eg), dots: []});
+    e.line.setAttribute('class', `fedge ${n.state === 'running' ? 'active' : n.state === 'done' ? 'done' : ''}`);
+    const flow = n.state === 'running' && !reduced.matches;  // particles flow into running agents
+    if (flow && !e.dots.length) e.dots = [0, 1 / 3, 2 / 3].map(t => ({t, c: el('circle', {r: 3, class: 'packet'}, F.pg)}));
+    if (!flow && e.dots.length) { e.dots.forEach(p => p.c.remove()); e.dots = []; }
+  });
+  if (changed) F.alpha = Math.max(F.alpha, 0.3);
+  drawn = items.map(i => ({n: i.n, key: i.key, g: F.nodes.get(i.key).g}));
+  kick();
+}
+
+function stepForce() {
+  const ns = [...F.nodes.values()], a = F.alpha;
+  for (let i = 0; i < ns.length; i++) for (let j = i + 1; j < ns.length; j++) {  // repulsion, plus no overlap
+    const p = ns[i], q = ns[j], dx = q.x - p.x || 0.1, dy = q.y - p.y, d2 = Math.max(dx * dx + dy * dy, 25), d = Math.sqrt(d2);
+    let f = 250 * a / d2;
+    const gap = p.r + q.r + 14 - d;
+    if (gap > 0) f += gap / d * 0.5;
+    p.vx -= dx * f; p.vy -= dy * f; q.vx += dx * f; q.vy += dy * f;
+  }
+  for (const {a: p, b: q} of F.edges.values()) {  // springs
+    const dx = q.x - p.x, dy = q.y - p.y, d = Math.hypot(dx, dy) || 1, f = (d - (30 + p.r + q.r)) / d * 0.1 * a;
+    q.vx -= dx * f; q.vy -= dy * f; p.vx += dx * f; p.vy += dy * f;
+  }
+  for (const n of ns) {
+    const c = n.n.hub ? 0.1 : 0.02;  // the session stays in the centre
+    n.vx = (n.vx - n.x * c * a) * 0.6; n.vy = (n.vy - n.y * c * a) * 0.6;
+    if (n.fx != null) { n.x = n.fx; n.y = n.fy; n.vx = n.vy = 0; } else { n.x += n.vx; n.y += n.vy; }
+  }
+  F.alpha *= 0.985;
+}
+
+function frame() {
+  F.raf = 0;
+  const moving = F.alpha > 0.004 || ndrag;
+  if (moving) stepForce();
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, dots = false;
+  for (const n of F.nodes.values()) {
+    n.g.setAttribute('transform', `translate(${n.x.toFixed(1)},${n.y.toFixed(1)})`);
+    x0 = Math.min(x0, n.x - n.r - 50); x1 = Math.max(x1, n.x + n.r + 50); y0 = Math.min(y0, n.y - n.r - 10); y1 = Math.max(y1, n.y + n.r + 24);
+  }
+  for (const {a, b, line, dots: ps} of F.edges.values()) {
+    line.setAttribute('x1', a.x); line.setAttribute('y1', a.y); line.setAttribute('x2', b.x); line.setAttribute('y2', b.y);
+    for (const p of ps) {
+      p.t = (p.t + 0.008) % 1;
+      p.c.setAttribute('cx', a.x + (b.x - a.x) * p.t); p.c.setAttribute('cy', a.y + (b.y - a.y) * p.t);
+      dots = true;
+    }
+  }
+  content = {x: x0, y: y0, w: x1 - x0, h: y1 - y0};
+  if (moving && auto && !ndrag) fit(0); else if (!vb) fit(0);
+  if (moving || dots) F.raf = requestAnimationFrame(frame);  // idle and nothing running: no frames at all
+}
+const kick = () => { if (F && !F.raf) F.raf = requestAnimationFrame(frame); };
+function stopForce() { if (F && F.raf) cancelAnimationFrame(F.raf); F = null; }
 
 function tick() {  // live clocks and "now doing" lines without re-rendering (keeps animations smooth)
   const extra = (Date.now() - fetchedAt) / 1000;
@@ -396,7 +557,7 @@ function views(s) {
 
 function showGraph(s) {
   const vs = views(s);
-  if (!vs.length) { document.getElementById('tabs').replaceChildren(); document.getElementById('graph').replaceChildren(); document.getElementById('now').replaceChildren(); document.getElementById('psub').textContent = ''; drawn = []; sig = ''; document.getElementById('ptitle').textContent = 'No live sessions'; updateCards('<p>No live sessions in the watched repos. Sessions show here while they or their agents are working.</p>'); return; }
+  if (!vs.length) { stopForce(); document.getElementById('tabs').replaceChildren(); document.getElementById('graph').replaceChildren(); document.getElementById('now').replaceChildren(); document.getElementById('psub').textContent = ''; drawn = []; sig = ''; document.getElementById('ptitle').textContent = 'No live sessions'; updateCards('<p>No live sessions in the watched repos. Sessions show here while they or their agents are working.</p>'); return; }
   if (!vs.some(v => v.id === selected)) selected = vs[0].id;
   const tabs = document.getElementById('tabs');
   tabs.replaceChildren(...vs.map(v => {
@@ -418,7 +579,8 @@ function showGraph(s) {
   const data = v.p ? v.p.lanes.flatMap(l => l.stages) : turns ? turnFlat(v.g) : v.g.nodes;
   const hubNote = v.g ? v.g.note : '';
   const newSig = selected + hubNote + JSON.stringify(data.map(n => [n.label || n.desc, n.state || n.status, n.note]));
-  if (newSig !== sig) {
+  if (view === 'force') forceUpdate(selected, forceItems(v, turns, hubNote));
+  else if (newSig !== sig) {
     sig = newSig;
     const L = v.p ? layoutPipeline(v.p) : turns ? layoutTurns(v.g) : layoutAuto(v.g);
     if (hubNote) L.hub.state = 'waiting';
