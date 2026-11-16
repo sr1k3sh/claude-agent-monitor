@@ -311,7 +311,7 @@ function draw(L) {
   const svg = document.getElementById('graph');
   svg.replaceChildren();
   content = {x: 0, y: 0, w: L.width, h: L.height};
-  svg.style.height = `${Math.round(Math.max(260, Math.min(L.height + 20, innerHeight * 0.7)))}px`;
+  svg.style.height = `${Math.round(Math.max(360, Math.min(L.height + 20, innerHeight * 0.85)))}px`;
   if (auto || !vb) fit(autoK); else setVB();
   const eg = el('g', {}, svg), pg = el('g', {}, svg), ng = el('g', {}, svg);
   L.labels.forEach(([x, y, t]) => { el('text', {x, y, class: 'lane-label'}, svg).textContent = t; });
@@ -573,7 +573,7 @@ function treeUpdate(sid, root) {
   drawn = all.map(t => { const d = shown.has(t.tk) && T.nodes.get(t.tk); return d ? {n: t.n, key: t.dk, g: d.card, sub: d.sub, doing: d.doing, chars: 29} : {n: t.n, key: t.dk, g: h('i')}; });
   if (!moved && vb) return;
   content = {x: 0, y: 0, w: 20 + (depth + 1) * (TW + TGX) + 60, h: 20 + rows * TROW - (TROW - TH)};
-  svg.style.height = `${Math.round(Math.max(300, Math.min(content.h * autoK + 20, innerHeight * 0.75)))}px`;
+  svg.style.height = `${Math.round(Math.max(480, Math.min(content.h * autoK + 20, innerHeight * 0.88)))}px`;
   if (auto || !vb) fit(autoK);
   T.start = performance.now();
   if (!T.raf) T.raf = requestAnimationFrame(treeFrame);
