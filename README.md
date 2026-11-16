@@ -4,6 +4,7 @@ A Claude Code plugin: a live local dashboard (http://127.0.0.1:8765) of the Clau
 
 - One tab per live session, with an animated orchestration graph: the main session fans out to its subagents, parallel agents share a column, and a moving dot shows where work is happening now.
 - An optional stage pipeline per task (Research → Plan → Execute → Review → Fix → QA → your OK), so you also see the steps that haven't started yet.
+- Each node shows what the agent is doing now; click it for its prompt, tool-call timeline and final report. Pan and zoom the graph.
 - Live tool calls, errors, tokens and estimated cost for every session and agent.
 - Only watched repos (plus their worktrees). Finished, idle or cleared sessions drop off on their own.
 

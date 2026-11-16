@@ -221,6 +221,37 @@ class AgentMonitorTests(unittest.TestCase):
             fh.write(json.dumps({"type": "custom-title", "customTitle": "My name"}) + "\n")
         self.assertIn("My name", self.m.state()["cards"]["abcdef12"])
 
+    def test_tool_summary_in_human_words(self):
+        self.assertEqual(self.m.tool_summary("Bash", {"command": "git status", "description": "Check git status"}),
+                         "Bash: Check git status")
+        self.assertEqual(self.m.tool_summary("Read", {"file_path": "/a/b/LocationService.kt"}), "Read LocationService.kt")
+
+    def test_agent_detail_prompt_timeline_and_report(self):
+        sid = "abcdef12-0000-0000-0000-000000000000"
+        bot = lambda *c: {"type": "assistant", "timestamp": "2026-11-13T00:00:01Z", "message": {"id": "x", "content": list(c)}}
+        res = lambda i, err: {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": i, "is_error": err}]}}
+        tool = lambda i, name, **inp: {"type": "tool_use", "id": i, "name": name, "input": inp}
+        write_jsonl(self.root / "-proj" / sid / "subagents" / "agent-a1.jsonl", [
+            {"type": "user", "message": {"content": "Plan the swap\nin two steps"}},
+            bot(tool("t1", "Bash", description="Run tests")), res("t1", True),
+            bot(tool("t2", "Read", file_path="/x/y.kt")), res("t2", False),
+            bot({"type": "text", "text": "thinking aloud"}),
+            bot(tool("t3", "SubagentHandback", message="All done.")),
+            bot(tool("t4", "Grep", pattern="p")),
+        ])
+        self.m.MAX_TIMELINE = 4  # keeps the newest 4 of 5
+        d = self.m.agent_detail("abcdef12", "a1")
+        self.assertEqual((d["desc"], d["type"], d["status"]), ("Plan the swap", "Plan", "done"))
+        self.assertEqual(d["prompt"], "Plan the swap\nin two steps")  # line breaks kept
+        self.assertEqual(d["result"], "All done.")  # the handback beats the last text
+        self.assertEqual(d["total"], 5)
+        self.assertEqual([(i.get("name"), i["what"], i.get("ok")) for i in d["timeline"]], [
+            ("Read", "/x/y.kt", True), (None, "thinking aloud", None), ("SubagentHandback", "All done.", None), ("Grep", "p", None)])
+        self.assertEqual(self.m.agent_detail("abcdef12", "a2")["result"], "")  # no report yet
+        self.assertEqual(self.m.agent_detail("abcdef12", "main")["prompt"], "add offline sync")
+        self.assertIsNone(self.m.agent_detail("abcdef12", "../../etc"))  # only transcripts the dashboard lists
+        self.assertIsNone(self.m.agent_detail("99999999", "main"))  # out of scope
+
     def test_latest_session_for_project_dir(self):
         self.assertEqual(self.m.project_dir("/a/b.c"), "-a-b-c")
         self.assertEqual(self.m.latest_session("/proj"), "abcdef12-0000-0000-0000-000000000000")

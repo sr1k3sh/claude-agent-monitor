@@ -9,13 +9,14 @@ A session is shown while it is active (written in the last 2 min) or, once it ha
 pipeline has a stage not done. Stdlib only, read-only, binds to localhost. The page polls /api
 every 2s and updates in place (keeps animations).
 
-  monitor.py [serve] [--port 8765]          run the dashboard
+  monitor.py [serve] [--port 8765]          run the dashboard (/api, /api/agent?s=SESSION&id=AGENT|main)
   monitor.py scope add|remove|list [DIR]    watch / unwatch a repo (default DIR: the current directory)
   monitor.py session [--cwd DIR]            print the newest main session id for a project dir
   monitor.py notify                         Notification hook: mark the stdin session as waiting on the user
 """
 import argparse, glob, html, json, os, re, subprocess, sys, time
 from datetime import datetime
+from urllib.parse import parse_qs, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.environ.get("CLAUDE_PROJECTS_DIR", os.path.expanduser("~/.claude/projects"))
@@ -87,11 +88,22 @@ def short(v, n=140):
     return s[:n] + ("…" if len(s) > n else "")
 
 
-def tool_summary(name, inp):
-    for k in ("description", "command", "file_path", "pattern", "query", "url", "prompt"):
+def tool_target(inp):
+    """(key, value) of the input field that best says what a tool call does."""
+    for k in ("description", "command", "file_path", "notebook_path", "pattern", "query", "url", "prompt", "message"):
         if isinstance(inp, dict) and inp.get(k):
-            return f"{name}: {short(inp[k])}"
-    return f"{name}: {short(inp)}"
+            return k, inp[k]
+    return None, inp
+
+
+def tool_summary(name, inp):
+    """One line in human words: 'Bash: Check git status', 'Read LocationService.kt'."""
+    k, v = tool_target(inp)
+    if name == "SubagentHandback":
+        return f"Reported: {short(v)}"
+    if k in ("file_path", "notebook_path"):
+        return f"{name} {os.path.basename(str(v))}"
+    return f"{name}: {short(v)}"
 
 
 def load_prices():
@@ -135,15 +147,60 @@ def user_text(r):
     return c if isinstance(c, str) else " ".join(x.get("text", "") for x in c or [] if isinstance(x, dict) and x.get("type") == "text")
 
 
-_cache = {}  # path -> ((mtime, size), parsed) so 2s polling doesn't re-read unchanged multi-MB transcripts
+_cache = {}  # (path, parser) -> ((mtime, size), parsed) so 2s polling doesn't re-read unchanged multi-MB transcripts
 
 
-def parse(path):
+def parse(path, fn=None):
+    fn = fn or _parse
     key = (os.path.getmtime(path), os.path.getsize(path))
-    if path in _cache and _cache[path][0] == key:
-        return _cache[path][1]
-    _cache[path] = (key, _parse(path))
-    return _cache[path][1]
+    if (path, fn) in _cache and _cache[path, fn][0] == key:
+        return _cache[path, fn][1]
+    _cache[path, fn] = (key, fn(path))
+    return _cache[path, fn][1]
+
+
+def clip(s, n):
+    """Truncate long text but keep its line breaks (prompts and reports read better that way)."""
+    s = s if isinstance(s, str) else json.dumps(s, ensure_ascii=False)
+    return s[:n] + ("…" if len(s) > n else "")
+
+
+MAX_TIMELINE, MAX_TEXT = 200, 4000
+
+
+def _detail(path):
+    """Prompt, tool-call timeline (last MAX_TIMELINE, with ok/error) and final report of one transcript."""
+    prompt, handback, last_text, items, by_id = "", "", "", [], {}
+    with open(path, errors="replace") as f:
+        for line in f:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            content, ts = (r.get("message") or {}).get("content"), r.get("timestamp")
+            if r.get("type") == "user" and not prompt and not r.get("isMeta"):
+                prompt = clip(user_text(r).strip(), MAX_TEXT)
+            if not isinstance(content, list):
+                continue
+            for c in content:
+                if not isinstance(c, dict):
+                    continue
+                t = c.get("type")
+                if t == "tool_result" and c.get("tool_use_id") in by_id:
+                    by_id.pop(c["tool_use_id"])["ok"] = not c.get("is_error")
+                elif r.get("type") != "assistant":
+                    continue
+                elif t == "tool_use":
+                    inp = c.get("input")
+                    if c.get("name") == "SubagentHandback" and isinstance(inp, dict):
+                        handback = clip(inp.get("message", ""), MAX_TEXT)  # a subagent's final report
+                    items.append({"t": ts, "kind": "tool", "name": c.get("name"),
+                                  "what": short(tool_target(inp)[1], 300), "ok": None})
+                    by_id[c.get("id")] = items[-1]
+                elif t == "text" and c.get("text", "").strip():
+                    items.append({"t": ts, "kind": "text", "what": clip(c["text"].strip(), 1000)})
+                    last_text = clip(c["text"].strip(), MAX_TEXT)
+    return {"prompt": prompt, "result": handback or last_text, "timeline": items[-MAX_TIMELINE:], "total": len(items)}
 
 
 def _parse(path):
@@ -288,7 +345,8 @@ def row(p, kind, meta, status, note=""):
         "start": a.astimezone().strftime("%m-%d %H:%M") if a else "",
         "events": events[-25:], "mtime": mtime,
         "t0": a.timestamp() if a else mtime, "t1": time.time() if live else (b.timestamp() if b else mtime),
-        "last": next((e[2] for e in reversed(events) if e[1] == "tool"), ""),
+        "last": next((e[2] for e in reversed(events) if e[1] in ("tool", "text")), ""),  # what it is doing now
+        "path": p,  # server side only: graphs() and cards() pick the fields they send
         "turns": turns if kind == "main" else [], "queued": queued if kind == "main" else [],
     }
 
@@ -371,7 +429,7 @@ def pipeline(rows, spec):
         stages = []
         for s in lane["stages"]:
             hits = [a for a in rows if a["kind"] == "sub" and s.get("match") and s["match"].lower() in a["desc"].lower()]
-            node = {"label": s["label"], "tools": sum(a["tools"] for a in hits), "elapsed": 0, "last": "",
+            node = {"label": s["label"], "id": hits[-1]["id"] if hits else "", "tools": sum(a["tools"] for a in hits), "elapsed": 0, "last": "",
                     "usd": round(sum(a["tok"]["usd"] for a in hits), 2)}
             if s.get("manual"):
                 node.update(state=s["manual"], note=s.get("note", ""))
@@ -469,7 +527,7 @@ def graphs(rows):
     out = []
     for sid, subs in by.items():
         m = mains.get(sid)
-        nodes = [{k: a[k] for k in ("id", "desc", "type", "status", "note", "tools", "elapsed", "t0", "t1", "last")}
+        nodes = [{k: a[k] for k in ("id", "desc", "type", "status", "note", "tools", "errors", "elapsed", "t0", "t1", "last")}
                  | {"usd": round(a["tok"]["usd"], 2)} for a in sorted(subs, key=lambda a: a["t0"])]
         turns, earlier = turn_nodes(m, nodes) if m and m["turns"] else ([], 0)
         out.append({
@@ -500,6 +558,15 @@ def state():
             "hide_after_min": HIDE_S / 60, "scopes": [os.path.basename(d) for d in scopes()]}
 
 
+def agent_detail(sid, aid):
+    """Detail of one shown session ('main') or subagent; None unless it is a transcript the dashboard lists."""
+    a = next((a for a in agents() if a["session"] == sid and (a["id"] == aid or aid == "main" and a["kind"] == "main")), None)
+    if not a:
+        return None
+    keep = ("id", "kind", "desc", "type", "status", "note", "tools", "errors", "tok", "elapsed", "start", "t0", "session")
+    return {k: a[k] for k in keep} | parse(a["path"], _detail)
+
+
 def latest_session(cwd):
     """Newest main-session id for the project at cwd (the one a running Claude Code session is writing)."""
     files = glob.glob(os.path.join(ROOT, project_dir(cwd), "*.jsonl"))
@@ -508,7 +575,14 @@ def latest_session(cwd):
 
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path.startswith("/api"):
+        url = urlparse(self.path)
+        if url.path == "/api/agent":
+            q = {k: v[0] for k, v in parse_qs(url.query).items()}
+            d = agent_detail(q.get("s", ""), q.get("id", ""))
+            if d is None:
+                return self.send_error(404)
+            body, ctype = json.dumps(d).encode(), "application/json"
+        elif self.path.startswith("/api"):
             body, ctype = json.dumps(state()).encode(), "application/json"
         else:
             with open(os.path.join(HERE, "index.html"), "rb") as f:  # read per request: page edits need no restart
