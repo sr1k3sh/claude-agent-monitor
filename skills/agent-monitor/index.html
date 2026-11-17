@@ -777,14 +777,15 @@ function showGraph(s) {
   document.getElementById('ptitle').textContent = cut(v.title, 90);
   document.getElementById('psub').textContent = `${v.project} · s:${v.id}${v.p ? ' · pipeline' : ' · auto'}`;
   const turns = !v.p && v.g.turns && v.g.turns.length;
-  const data = v.p ? v.p.lanes.flatMap(l => l.stages) : turns ? turnFlat(v.g) : v.g.nodes;
+  const pl = v.p && (v.g ? v.g.lanes : v.p.lanes);  // the server's lanes add workflow runs and 'Other' to the pipeline's
+  const data = pl ? pl.flatMap(l => l.stages) : turns ? turnFlat(v.g) : v.g.nodes;
   const hubNote = v.g ? v.g.note : '';
   const newSig = selected + hubNote + JSON.stringify(data.map(n => [n.label || n.desc, n.state || n.status, n.note]));
   if (view === 'lanes') renderLanes(v.g ? v.g.lanes : []);
   else if (view === 'tree') treeUpdate(selected, buildTree(v, hubNote));
   else if (newSig !== sig) {
     sig = newSig;
-    const L = v.p ? layoutPipeline(v.p) : turns ? layoutTurns(v.g) : layoutAuto(v.g);
+    const L = pl ? layoutPipeline({lanes: pl}) : turns ? layoutTurns(v.g) : layoutAuto(v.g);
     if (hubNote) L.hub.state = 'waiting';
     L.hubNote = hubNote;
     draw(L);

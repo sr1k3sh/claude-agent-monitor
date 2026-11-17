@@ -105,6 +105,20 @@ class AgentMonitorTests(unittest.TestCase):
         rows = {a["id"]: a for a in self.m.agents()}
         self.assertEqual((rows["w1"]["session"], rows["w1"]["project"]), ("abcdef12", rows["a1"]["project"]))
         self.assertEqual((rows["w1"]["status"], rows["w2"]["status"]), ("done", "running"))
+        # one lane per run, one stage per phase; a phase with 2+ agents is a group of them
+        (wf / "agent-w1.meta.json").write_text(json.dumps({"description": "research:ios", "workflowPhase": "Research"}))
+        (wf / "agent-w2.meta.json").write_text(json.dumps({"description": "research:android", "workflowPhase": "Research"}))
+        write_jsonl(wf / "agent-w3.jsonl", [assistant("w3", "2026-11-13T00:07:00Z", MTOK, "plan")])
+        (wf / "agent-w3.meta.json").write_text(json.dumps({"description": "pdm:plan", "workflowPhase": "Plan"}))
+        scripts = self.root / "-proj" / "abcdef12-0000-0000-0000-000000000000" / "workflows" / "scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "killed-app-wf_1.js").write_text("")
+        g = next(g for g in self.m.state()["graphs"] if g["session"] == "abcdef12")
+        lane = next(l for l in g["lanes"] if l["name"].startswith("Workflow"))
+        self.assertEqual(lane["name"], "Workflow killed-app (wf_1)")
+        self.assertEqual([(s["label"], sorted(s["ids"]), s["state"]) for s in lane["stages"]],
+                         [("Research", ["w1", "w2"], "running"), ("pdm:plan", ["w3"], "running")])
+        self.assertFalse(any(i in ("w1", "w2", "w3") for l in g["lanes"] if l is not lane for s in l["stages"] for i in s.get("ids") or [s.get("id")]))
 
     def test_pipeline_states_and_bad_file_skipped(self):
         [p] = self.m.state()["pipelines"]

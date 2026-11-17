@@ -340,6 +340,7 @@ def row(p, kind, meta, status, note=""):
         "session": rel(p)[1][:8] if kind == "sub" else os.path.basename(p)[:8],
         "desc": meta.get("description", os.path.basename(p)),
         "type": meta.get("agentType", "?"),
+        "wf": wf_name(p) if kind == "sub" else "", "phase": meta.get("workflowPhase") or "",
         "status": status, "note": note, "tools": tools, "errors": errors, "tok": tok,
         # live rows: elapsed counts to now so the client clock ticks from the real start
         "elapsed": int(((time.time() if live else b.timestamp()) - a.timestamp())) if a and b else 0,
@@ -366,6 +367,16 @@ def scoped_dirs():
 def rel(p):
     """[project dir, session id, ...] of a transcript path under ROOT."""
     return os.path.relpath(p, ROOT).split(os.sep)
+
+
+def wf_name(p):
+    """'<name> (wf_…)' for a workflow agent (subagents/workflows/<run>/agent-*.jsonl), else ''."""
+    parts = rel(p)
+    if parts[2:4] != ["subagents", "workflows"] or len(parts) < 6:
+        return ""
+    run = parts[4]
+    script = glob.glob(os.path.join(ROOT, parts[0], parts[1], "workflows", "scripts", f"*-{glob.escape(run)}.js"))
+    return f"{os.path.basename(script[0])[:-len(run) - 4]} ({run})" if script else run
 
 
 def sub_glob(d, sid="*"):
@@ -613,6 +624,19 @@ def stage(a):
         k: a.get(k) for k in ("id", "desc", "type", "last", "elapsed", "usd", "tools", "errors", "act", "role", "est", "runs")}
 
 
+def phase_stage(phase, ags):
+    """One workflow phase: the agent itself when it ran alone, else a group the tree opens into its agents."""
+    if len(ags) == 1:
+        return stage(ags[0]) | {"ids": [ags[0]["id"]]}
+    sts = [stage(a) for a in ags]
+    live = [s for s in sts if s["state"] != "done"]
+    state = ("waiting" if any(s["state"] == "waiting" for s in live) else "running" if live else "done")
+    return {"label": phase, "id": "", "ids": [a["id"] for a in ags], "state": state, "ask": "",
+            "usd": round(sum(a["usd"] for a in ags), 2), "tools": sum(a["tools"] for a in ags),
+            "elapsed": int(max(a["t1"] for a in ags) - min(a["t0"] for a in ags)),
+            "last": next((s["last"] for s in live if s["last"]), ""), "est": None}
+
+
 def lane_eta(stages, seq):
     """Seconds left from the medians: pipeline stages run one after another (sum), a question's agents side by
     side (max). None when a step still to do has no estimate."""
@@ -634,11 +658,20 @@ def lanes(nodes, turns, pipe=None):
                       for s in lane["stages"]]
             rows.append((lane["name"], stages, [by_id[i] for i in ids], "", True))
             claimed |= ids
-    else:
+    runs = {}  # workflow run -> phase -> agents, in start order (a pipeline's claim wins)
+    for a in sorted(nodes, key=lambda a: a["t0"]):
+        if a.get("wf") and a["id"] not in claimed:
+            runs.setdefault(a["wf"], {}).setdefault(a["phase"] or "Agents", []).append(a)
+    for run, phases in runs.items():
+        ags = [a for p in phases.values() for a in p]
+        rows.append((f"Workflow {run}", [phase_stage(p, ags) for p, ags in phases.items()], ags, "", True))
+        claimed |= {a["id"] for a in ags}
+    if not pipe:
         for t in turns:
-            if t["agents"]:
-                rows.append((t["label"], [stage(a) for a in t["agents"]], t["agents"], t["state"], False))
-                claimed |= {a["id"] for a in t["agents"]}
+            ags = [a for a in t["agents"] if a["id"] not in claimed]
+            if ags:
+                rows.append((t["label"], [stage(a) for a in ags], ags, t["state"], False))
+                claimed |= {a["id"] for a in ags}
     rest = [a for a in nodes if a["id"] not in claimed]
     if rest:
         rows.append(("Other", [stage(a) for a in rest], rest, "", False))
@@ -668,7 +701,7 @@ def graphs(rows, pipes=(), hist=None):
         for s in [s for l in (pipe or {}).get("lanes", []) for s in l["stages"]]:
             for i in s["ids"]:
                 stage_of.setdefault(i, s["label"])
-        nodes = [{k: a[k] for k in ("id", "desc", "type", "status", "note", "tools", "errors", "elapsed", "t0", "t1", "last", "act")}
+        nodes = [{k: a[k] for k in ("id", "desc", "type", "status", "note", "tools", "errors", "elapsed", "t0", "t1", "last", "act", "wf", "phase")}
                  | {"usd": round(a["tok"]["usd"], 2)} | guess(hist or {}, role(a["desc"], a["type"], stage_of.get(a["id"])))
                  for a in sorted(subs, key=lambda a: a["t0"])]
         turns, earlier, every = turn_nodes(m, nodes) if m and m["turns"] else ([], 0, [])
