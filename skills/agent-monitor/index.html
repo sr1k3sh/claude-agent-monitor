@@ -916,9 +916,12 @@ addEventListener('keydown', e => { if (e.key === 'Escape' && openKey) closeDetai
 document.getElementById('dclose').onclick = closeDetail;
 initPanZoom();
 
+let pageAt = null;
 async function poll() {
   try {
     const s = await (await fetch('/api', {cache: 'no-store'})).json();
+    if (pageAt != null && s.page !== pageAt) return location.reload();  // the page itself was updated
+    pageAt = s.page;
     fetchedAt = Date.now();
     last = s;
     const c = s.counts;

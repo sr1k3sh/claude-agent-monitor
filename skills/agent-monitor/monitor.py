@@ -731,7 +731,7 @@ def state():
     counts = {s: sum(a["status"] == s for a in rows) for s in ("waiting", "active", "running", "stalled?", "idle", "done")}
     counts["usd"] = round(sum(a["tok"]["usd"] for a in rows), 2)
     return {"pipelines": pipes, "graphs": graphs(rows, pipes, hist), "cards": cards_by_session(rows), "counts": counts,
-            "hide_after_min": HIDE_S / 60, "scopes": [os.path.basename(d) for d in scopes()]}
+            "hide_after_min": HIDE_S / 60, "page": os.path.getmtime(os.path.join(HERE, "index.html")), "scopes": [os.path.basename(d) for d in scopes()]}
 
 
 def agent_detail(sid, aid):
