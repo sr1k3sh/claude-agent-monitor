@@ -7,7 +7,8 @@ Watched repos are listed in $AGENT_MONITOR_HOME/scopes.json (`monitor.py scope a
 A session is shown while it is active (written in the last 2 min) or, once it has run subagents, while it or one of its agents wrote in the last HIDE_AFTER_MIN minutes
 (default 30) and, when it has a task pipeline ($AGENT_MONITOR_HOME/pipelines/*.json), while that
 pipeline has a stage not done. Stdlib only, read-only, binds to localhost. The page polls /api
-every 2s and updates in place (keeps animations).
+every 2s and updates in place (keeps animations). The Team panels also read the frontmatter (first 4 KB) of
+~/.claude/agents/*.md ($CLAUDE_AGENTS_DIR) for the roster.
 
   monitor.py [serve] [--port 8765]          run the dashboard (/api, /api/agent?s=SESSION&id=AGENT|main)
   monitor.py scope add|remove|list [DIR]    watch / unwatch a repo (default DIR: the current directory)
@@ -22,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROOT = os.environ.get("CLAUDE_PROJECTS_DIR", os.path.expanduser("~/.claude/projects"))
 HOME = os.environ.get("AGENT_MONITOR_HOME", os.path.expanduser("~/.claude/agent-monitor"))
 HERE = os.path.dirname(os.path.abspath(__file__))
+AGENTS_DIR = os.environ.get("CLAUDE_AGENTS_DIR", os.path.expanduser("~/.claude/agents"))
 HIDE_S = float(os.environ.get("HIDE_AFTER_MIN", "30")) * 60
 
 
@@ -60,6 +62,7 @@ STALE_S = 600  # running agent with no writes for 10 min is shown as "stalled?"
 HIST_MAX, HIST_TTL, MIN_RUNS = 400, 60, 3  # estimates: newest 400 agent transcripts, rescanned each minute, 3+ runs
 ASK_TOOLS = {"AskUserQuestion", "ExitPlanMode"}  # a tool_use of these without its result = waiting on the user
 WAIT_DIR = os.path.join(HOME, "waiting")
+ROLE_RANK = ["pdm", "techlead", "senior", "mid", "junior", "reviewer", "qa"]  # Team panels: role = the name's last "-" part
 
 
 def notify(data):
@@ -719,8 +722,144 @@ def graphs(rows, pipes=(), hist=None):
     return sorted(out, key=lambda g: (not g["live"], -g["mtime"]))
 
 
+def roster():
+    """Custom agents from AGENTS_DIR/*.md frontmatter: name (else file stem), description, model, in ROLE_RANK order."""
+    out, seen = [], set()
+    for p in sorted(glob.glob(os.path.join(AGENTS_DIR, "*.md"))):
+        try:
+            with open(p, encoding="utf-8-sig", errors="replace") as f:  # -sig: a BOM would hide the opening ---
+                lines = f.read(4096).split("\n")
+        except OSError:
+            continue
+        fm, key = {}, None
+        if lines[0].strip() == "---":
+            for ln in lines[1:]:
+                if ln.strip() == "---":
+                    break
+                m = re.match(r"([\w-]+):\s*(.*)$", ln)
+                if m:
+                    key, v = m.group(1), m.group(2).strip()
+                    fm[key] = "" if v in (">", "|", ">-", "|-", ">+", "|+") else v.strip("\"'")
+                elif key and ln[:1].isspace() and ln.strip():  # folded / literal block or wrapped value
+                    fm[key] = f"{fm[key]} {ln.strip()}".strip()
+        name = fm.get("name") or os.path.basename(p)[:-3]
+        if name in seen:  # two files with the same name: Claude Code runs one, so list it once (first file by path)
+            continue
+        seen.add(name)
+        out.append({"name": name, "desc": short(fm.get("description", ""), 160), "model": fm.get("model") or "inherit"})
+    # A family of agents sharing a prefix (e.g. cavecrew-*) is a toolkit, not staff: it goes after the team, with no role.
+    prefixes = [a["name"].split("-", 1)[0] for a in out]
+    for a in out:
+        suffix = a["name"].rsplit("-", 1)[-1]
+        a["role"] = suffix if suffix in ROLE_RANK and prefixes.count(a["name"].split("-", 1)[0]) == 1 else ""
+    rank = lambda n: ROLE_RANK.index(n.rsplit("-", 1)[-1]) if n.rsplit("-", 1)[-1] in ROLE_RANK else len(ROLE_RANK)
+    family = lambda n: prefixes.count(n.split("-", 1)[0]) > 1
+    return sorted(out, key=lambda a: (family(a["name"]), rank(a["name"]), a["name"]))
+
+
+def _brief(path):
+    """(first ts, last ts, usd, tool errors) of a transcript: the Team panel's numbers, without keeping its events."""
+    first = last = None
+    usd, errors, seen, prices = 0.0, 0, set(), load_prices()
+    with open(path, errors="replace") as f:
+        for line in f:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            ts = r.get("timestamp")
+            if ts:
+                first, last = first or ts, ts
+            msg = r.get("message") or {}
+            u, mid = msg.get("usage"), msg.get("id")
+            if r.get("type") == "assistant" and u and mid not in seen:  # streamed blocks repeat the same usage
+                seen.add(mid)
+                usd += cost_of(msg.get("model"), u, prices) or 0
+            content = msg.get("content")
+            if isinstance(content, list):
+                errors += sum(isinstance(c, dict) and c.get("type") == "tool_result" and bool(c.get("is_error")) for c in content)
+    return first, last, usd, errors
+
+
+_team = {"t": 0, "v": {}}
+
+
+def team_history():
+    """agent type -> {last_done, runs_today, usd_today} over the newest HIST_MAX transcripts, rescanned every HIST_TTL.
+    A run counts for today when its first record is from today (local time)."""
+    if time.time() - _team["t"] < HIST_TTL:
+        return _team["v"]
+    midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    files = sorted(((os.path.getmtime(p), p) for d in scoped_dirs() for p in sub_glob(d)), reverse=True)[:HIST_MAX]
+    out = {}
+    for mtime, p in files:
+        meta = read_meta(p)
+        if not meta.get("agentType"):
+            continue
+        h = out.setdefault(meta["agentType"], {"last_done": None, "runs_today": 0, "usd_today": 0.0})
+        newest_done = meta.get("finished") and not h["last_done"]
+        if mtime < midnight and not newest_done:  # started before today and not needed for last_done: skip the read
+            continue
+        first, last, usd, errors = parse(p, _brief)
+        if first and iso(first).timestamp() >= midnight:
+            h["runs_today"] += 1
+            h["usd_today"] += usd
+        if newest_done:
+            h["last_done"] = {"id": os.path.basename(p)[len("agent-"):-len(".jsonl")], "session": rel(p)[1][:8],
+                              "desc": meta.get("description", ""), "t1": iso(last).timestamp() if last else mtime, "errors": errors}
+    _team.update(t=time.time(), v=out)
+    return out
+
+
+def team(rows):
+    """Every roster agent with its live runs (subagent type == its name, oldest first) and its last run and today's
+    runs and cost (team_history, refreshed with rows' finished runs so a run that just ended shows at once)."""
+    members = roster()
+    if not members:
+        return []
+    titles = {a["session"]: a["desc"] for a in rows if a["kind"] == "main"}
+    hist = team_history()
+    by = {}
+    for m in members:
+        h = hist.get(m["name"], {})
+        by[m["name"]] = m | {"live": [], "last_done": h.get("last_done"), "runs_today": h.get("runs_today", 0),
+                             "usd_today": round(h.get("usd_today", 0.0), 2)}
+    for a in sorted(rows, key=lambda a: a["t0"]):
+        m = by.get(a["type"]) if a["kind"] == "sub" else None
+        if m and a["status"] in ("running", "waiting", "stalled?"):
+            m["live"].append({k: a[k] for k in ("id", "session", "desc", "status", "elapsed", "act", "last", "t0")}
+                             | {"title": titles.get(a["session"], "")})
+        elif m and a["status"] == "done" and (not m["last_done"] or a["t1"] > m["last_done"]["t1"]):
+            m["last_done"] = {"id": a["id"], "session": a["session"], "desc": a["desc"], "t1": a["t1"], "errors": a["errors"]}
+    for m in by.values():
+        sts = {a["status"] for a in m["live"]}
+        m["state"] = ("waiting" if "waiting" in sts else "running" if "running" in sts else "stalled" if sts
+                      else "error" if m["last_done"] and m["last_done"]["errors"] else "idle")
+    return list(by.values())
+
+
+FLOW_STATE = {"running": "running", "waiting": "waiting", "stalled?": "stalled"}
+
+
+def team_flows(rows, names):
+    """Per shown session (newest first), its runs of roster agents in start order: the hand-off chain the Team flow
+    panel draws. A finished run with tool errors is 'error'. Sessions without roster runs are left out."""
+    titles = {a["session"]: a["desc"] for a in rows if a["kind"] == "main"}
+    newest, by = {}, {}
+    for a in rows:
+        newest[a["session"]] = max(newest.get(a["session"], 0), a["mtime"])
+    for a in sorted(rows, key=lambda a: a["t0"]):
+        if a["kind"] == "sub" and a["type"] in names:
+            by.setdefault(a["session"], []).append({
+                "name": a["type"], "id": a["id"], "desc": a["desc"], "t0": a["t0"], "t1": a["t1"],
+                "state": FLOW_STATE.get(a["status"]) or ("error" if a["errors"] else "done")})
+    return [{"session": s, "title": titles.get(s, f"session {s}"), "steps": steps}
+            for s, steps in sorted(by.items(), key=lambda kv: -newest[kv[0]])]
+
+
 def state():
     rows, hist = agents(), history()
+    members = team(rows)  # before the filter below: a member's live run counts even in a hidden session
     pipes = pipelines(rows, hist)
     finished = {p["session"] for p in pipes if all(n["state"] == "done" for l in p["lanes"] for n in l["stages"])}
     # a session without agents shows only while it is being written (a live chat), not while idle
@@ -730,13 +869,19 @@ def state():
     pipes = [p for p in pipes if p["session"] in live]
     counts = {s: sum(a["status"] == s for a in rows) for s in ("waiting", "active", "running", "stalled?", "idle", "done")}
     counts["usd"] = round(sum(a["tok"]["usd"] for a in rows), 2)
+    flows = team_flows(rows, {m["name"] for m in members})
     return {"pipelines": pipes, "graphs": graphs(rows, pipes, hist), "cards": cards_by_session(rows), "counts": counts,
+            "team": members, "team_flows": flows,
             "hide_after_min": HIDE_S / 60, "page": os.path.getmtime(os.path.join(HERE, "index.html")), "scopes": [os.path.basename(d) for d in scopes()]}
 
 
 def agent_detail(sid, aid):
     """Detail of one shown session ('main') or subagent; None unless it is a transcript the dashboard lists."""
     a = next((a for a in agents() if a["session"] == sid and (a["id"] == aid or aid == "main" and a["kind"] == "main")), None)
+    if not a and aid != "main":  # a Team member's last run can be older than HIDE_S: any subagent in scope
+        p = next((p for d in scoped_dirs() for p in sub_glob(d) if rel(p)[1][:8] == sid and os.path.basename(p) == f"agent-{aid}.jsonl"), None)
+        meta = read_meta(p) if p else {}
+        a = p and row(p, "sub", meta, "done" if meta.get("finished") else "stalled?")
     if not a:
         return None
     keep = ("id", "kind", "desc", "type", "status", "note", "tools", "errors", "tok", "elapsed", "start", "t0", "session")

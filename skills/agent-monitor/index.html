@@ -144,11 +144,46 @@ li .ok{color:var(--done)} li .bad{color:var(--err)} li b{color:var(--fg)}
 .prog i{display:block;height:100%;background:var(--done)} .lprog{color:var(--muted);font-size:13px;white-space:nowrap}
 .adot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;vertical-align:1px}
 .scard .est.over,.scard .act.stall{color:var(--wait)}
+/* team panels: every custom agent, coloured by its live runs (working is green here only), and per-session hand-off flow */
+#team{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:6px}
+.scard.member{max-width:none;flex:none;padding:5px 9px;gap:0;cursor:pointer}
+.member .top{display:flex;gap:4px;align-items:baseline} .member .top b{flex:1;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.scard.member small,.scard.member .doing{font-size:12px}
+.scard.member.running,.fnode.running{border-left-color:var(--done);animation:tbreathe 2.4s ease-in-out infinite}
+.scard.member.stalled,.scard.member.waiting,.fnode.stalled,.fnode.waiting{border-left-color:var(--wait)} .scard.member.error,.fnode.error{border-left-color:var(--err)}
+.scard.member.idle{opacity:.6} .scard.member.idle:hover,.scard.member.idle:focus-visible{opacity:1}
+.member.running .ic,.fnode.running .ic{color:var(--done)} .member.stalled .ic,.fnode.stalled .ic{color:var(--wait)}
+.member .pill,.fnode .pill{background:var(--done);margin:0 0 0 4px;padding:0 6px}
+@keyframes tbreathe{50%{box-shadow:0 0 0 3px color-mix(in srgb,var(--done) 25%,transparent)}}
+.flow{margin:4px 0 10px} .flow h4{margin:0 0 2px;font-size:13px;overflow-wrap:anywhere} .flow h4 small{color:var(--muted);font-weight:400;margin-left:6px}
+.fbox{overflow-x:auto} .fcanvas{position:relative}
+.fcanvas svg{position:absolute;left:0;top:0;overflow:visible;pointer-events:none} .fcanvas .edge{stroke-width:2}
+.fcol{position:absolute;top:0;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.fnode{position:absolute;display:flex;align-items:center;border:1px solid var(--line);border-left:4px solid var(--edge);border-radius:8px;background:var(--card);color:var(--fg);font:12px system-ui;padding:0 8px;cursor:pointer;white-space:nowrap;overflow:hidden}
+.fnode span.nm{overflow:hidden;text-overflow:ellipsis} .fnode.done{border-left-color:var(--done)}
+.fnode:disabled{opacity:.4;border-style:dashed;cursor:default} .fnode.you{border-radius:999px;justify-content:center;font-weight:600;cursor:default}
+.fnode:not(:disabled):not(.you):hover,.fnode:focus-visible,.fnode.sel{outline:2px solid var(--fg);outline-offset:1px}
+@keyframes tbreathe{50%{box-shadow:0 0 0 3px color-mix(in srgb,var(--done) 25%,transparent)}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important}}
 </style>
 </head>
 <body>
 <h2>Agent Monitor <small id="counts">loading…</small></h2>
+<section class="panel">
+  <h3>Team<span class="ptitle-sub" id="tsub"></span></h3>
+  <div id="team" role="group" aria-label="Team members"></div>
+  <div class="legend">
+    <span><i style="background:var(--done)"></i>working</span>
+    <span><i style="background:var(--wait)"></i>waiting on you / stalled</span>
+    <span><i style="background:var(--err)"></i>last run had errors</span>
+    <span><i style="background:var(--edge)"></i>idle</span>
+    <span>click a member for its current or last run</span>
+  </div>
+</section>
+<section class="panel">
+  <h3>Team flow<span class="ptitle-sub">hand-offs between team members, per session</span></h3>
+  <div id="flows"></div>
+</section>
 <section class="panel">
   <div class="tabs" id="tabs" role="tablist" aria-label="Sessions"></div>
   <div class="vsw" role="group" aria-label="View"><button data-view="tree">Tree</button><button data-view="lanes">Lanes</button><button data-view="flow">Flow</button></div>
@@ -437,8 +472,9 @@ function initPanZoom() {
   document.getElementById('tcol').onclick = () => treeFold(t => t.anc.length && !isActive(t) ? false : undefined);
   const btns = document.querySelectorAll('.vsw button'), label = () => {
     btns.forEach(b => b.setAttribute('aria-pressed', b.dataset.view === view));
-    document.querySelector('.panel').classList.toggle('lanes', view === 'lanes');
-    document.querySelector('.panel').classList.toggle('tree', view === 'tree');
+    const panel = svg.closest('.panel');
+    panel.classList.toggle('lanes', view === 'lanes');
+    panel.classList.toggle('tree', view === 'tree');
     svg.classList.toggle('tree', view === 'tree');
     document.getElementById('hint').textContent = view === 'lanes' ? 'click a stage for details · ▸ opens a lane'
       : `click a card for details${view === 'tree' ? ' · ▸/▾ folds a branch' : ''} · drag to pan · wheel to zoom`;
@@ -667,7 +703,7 @@ const treeToggle = tk => treeFold(t => t.tk === tk ? !t.open : undefined);
 
 function tick() {  // live clocks and "now doing" lines without re-rendering (keeps animations smooth)
   const extra = (Date.now() - fetchedAt) / 1000;
-  drawn.forEach(({n, sub, doing, chars, upd}) => {
+  allDrawn().forEach(({n, sub, doing, chars, upd}) => {
     if (sub && n.state === 'running') sub.textContent = subText(n, extra);
     if (doing) doing.textContent = chars ? cut(nodeDoing(n), chars) : nodeDoing(n);
     if (upd) upd(extra);
@@ -714,6 +750,148 @@ function renderLanes(lanes) {
   board.replaceChildren(...parts);
   const back = refocus && [...board.querySelectorAll('[data-key],[data-lane]')].find(e => (e.dataset.key || e.dataset.lane) === refocus);
   if (back) back.focus({preventScroll: true});
+}
+
+/* team panels: always shown above the session panel; their clickable items live in teamDrawn (drawn is the session view's) */
+const TEAM_TXT = {running: 'working', waiting: 'waiting on you', stalled: 'stalled?', error: 'last run had errors', idle: 'idle'};
+let teamDrawn = [];
+const memberEls = new Map(), flowEls = new Map();  // name / session -> {el, sig, ds}: rebuilt only when their data changes
+const allDrawn = () => drawn.concat(teamDrawn);
+const keepOrder = (box, els) => { if (els.some((e, i) => box.children[i] !== e) || box.children.length !== els.length) box.replaceChildren(...els); };
+
+function memberCard(m) {
+  // the open run stays the card's run while it is live or the last finished one, so a poll never closes its drawer
+  const ld = m.last_done, isOpen = r => r && `a:${r.id}` === openKey;
+  const src = m.live.find(isOpen) || (isOpen(ld) && ld) || m.live[0] || ld;
+  const run = m.live.includes(src) ? src : null, key = src ? `a:${src.id}` : `m:${m.name}`;
+  const sig = JSON.stringify([m, key]).replace(/"(elapsed|act)":[\d.]+/g, '');  // ticking fields update in place; poll() sets .sel
+  let c = memberEls.get(m.name);
+  if (c && c.sig === sig) return c;
+  const b = c ? c.el : h('button');
+  b.className = `scard member ${m.state}`;
+  b.dataset.key = key;
+  b.title = `${m.model} · ${m.desc}`;
+  b.setAttribute('aria-label', `${m.name}, ${TEAM_TXT[m.state]}${m.live.length ? `, ${m.live.length} live run${m.live.length > 1 ? 's' : ''}` : ''}`);
+  const top = h('span', 'top'), t = h('b');
+  t.append(h('span', 'ic', ICON[m.state] || '○'), m.name);
+  if (m.live.length > 1) t.append(h('span', 'pill', `×${m.live.length}`));
+  top.append(t, h('small', '', `${m.runs_today} today · $${m.usd_today.toFixed(2)}`));
+  const parts = [top];
+  const clocks = m.live.slice(0, 2).map(r => {
+    const rn = {state: STATE[r.status] || 'running', act: r.act, elapsed: r.elapsed}, c = h('small');
+    parts.push(h('span', 'doing', `${r.status === 'waiting' ? '⏸' : '▶'} ${r.desc}${r.last ? ` — ${r.last}` : ''}`), c);
+    const where = `${cut(r.title || 'session', 40)} · s:${r.session}`;
+    return extra => { c.textContent = [where, r.status === 'waiting' ? 'waiting on you' : fmt(rn.elapsed + extra), actText(rn)].filter(Boolean).join(' · '); };
+  });
+  if (m.live.length > 2) parts.push(h('small', '', `+${m.live.length - 2} more running`));
+  const lastEl = h('small', '', m.last_done ? '' : 'no finished runs yet');
+  parts.push(lastEl);
+  b.replaceChildren(...parts);
+  const n = {label: src ? src.desc : m.name, type: m.name, state: run ? STATE[run.status] : src ? 'done' : 'pending',
+             elapsed: run ? run.elapsed : 0, act: run && run.act, last: run ? run.last : '', errors: run ? 0 : src ? src.errors : 0, ask: ''};
+  const d = {n, key, g: b, sid: src && src.session, upd: extra => {
+    clocks.forEach(u => u(extra));
+    const l = m.last_done;
+    if (l) lastEl.replaceChildren(`last: ${cut(l.desc, 60)} · ${ago(Date.now() / 1000 - l.t1)} ago`,
+                                  ...(l.errors ? [h('span', 'errs', ` · ${l.errors} tool error${l.errors > 1 ? 's' : ''}`)] : []));
+  }};
+  d.upd((Date.now() - fetchedAt) / 1000);
+  b.onclick = () => openDetail(d);
+  c = {el: b, sig, ds: [d]};
+  memberEls.set(m.name, c);
+  return c;
+}
+
+function renderTeam(team) {
+  const box = document.getElementById('team');
+  document.getElementById('tsub').textContent = `${team.filter(m => m.state === 'running').length} working · ${team.length} members`;
+  if (!team.length) { memberEls.clear(); box.replaceChildren(h('p', 'now', 'No custom agents in ~/.claude/agents.')); return []; }
+  const cs = team.map(memberCard), names = new Set(team.map(m => m.name));
+  [...memberEls.keys()].forEach(k => names.has(k) || memberEls.delete(k));
+  keepOrder(box, cs.map(c => c.el));
+  return cs.flatMap(c => c.ds);
+}
+
+/* team flow: per session, You -> role columns (PdM -> Developers -> Review -> QA); arrows follow the runs' start order */
+const FCOLS = [['PdM', ['pdm']], ['Developers', ['techlead', 'senior', 'mid', 'junior']], ['Review', ['reviewer']], ['QA', ['qa']]];
+const FW = 150, FH = 28, FCW = 186, FRH = 36, FTOP = 18, FROWS = 3;  // a column wraps after FROWS members
+
+function flowBlock(f, team) {
+  const sig = JSON.stringify([f.title, f.steps.map(st => [st.name, st.id, st.state, st.desc]), team.map(m => [m.name, m.role])]);
+  const c = flowEls.get(f.session);
+  if (c && c.sig === sig) return c;
+  const used = new Map();  // name -> its runs in this session, oldest first
+  f.steps.forEach(st => used.set(st.name, [...(used.get(st.name) || []), st]));
+  const cols = FCOLS.map(([label, roles]) => [label, team.filter(m => roles.includes(m.role))]).filter(([, ms]) => ms.length);
+  const other = team.filter(m => !FCOLS.some(([, roles]) => roles.includes(m.role)) && used.has(m.name));
+  if (other.length) cols.push(['Other', other]);
+  const rows = Math.min(FROWS, Math.max(1, ...cols.map(([, ms]) => ms.length))), pos = new Map(), ds = [];
+  const colX = [FCW];
+  cols.forEach(([, ms], ci) => { colX[ci + 1] = colX[ci] + Math.ceil(ms.length / FROWS) * FCW; });
+  pos.set('You', {x: 0, y: FTOP + (rows - 1) * FRH / 2});
+  const wrap = h('div', 'flow'), title = h('h4', '', cut(f.title, 90)), box = h('div', 'fbox'), cv = h('div', 'fcanvas');
+  title.append(h('small', '', `s:${f.session} · ${f.steps.length} run${f.steps.length === 1 ? '' : 's'}`));
+  const W = colX[cols.length] - (FCW - FW) + 8, Ht = FTOP + rows * FRH + 34;  // room below for arrows that go back
+  cv.style.width = `${W}px`; cv.style.height = `${Ht}px`;
+  const svg = el('svg', {width: W, height: Ht, 'aria-hidden': 'true'});
+  const mk = el('marker', {id: `fa-${f.session}`, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: 'auto'}, el('defs', {}, svg));
+  el('path', {d: 'M0,0 L10,5 L0,10 z', fill: 'context-stroke'}, mk);
+  cv.append(svg);
+  const place = (node, x, y) => { node.style.left = `${x}px`; node.style.top = `${y}px`; node.style.width = `${FW}px`; node.style.height = `${FH}px`; cv.append(node); };
+  const you = h('div', 'fnode you', 'You');
+  place(you, 0, pos.get('You').y);
+  cols.forEach(([label, ms], ci) => {
+    const head = h('div', 'fcol', label);
+    head.style.left = `${colX[ci]}px`;
+    cv.append(head);
+    ms.forEach((m, ri) => {
+      const runs = used.get(m.name), x = colX[ci] + Math.floor(ri / FROWS) * FCW, y = FTOP + ri % FROWS * FRH, b = h('button', 'fnode');
+      pos.set(m.name, {x, y});
+      b.append(h('span', 'ic', runs ? ICON[runs[runs.length - 1].state] || '○' : '○'), h('span', 'nm', m.name));
+      if (!runs) { b.disabled = true; b.title = `${m.name}: not used in this session`; place(b, x, y); return; }
+      const st = runs[runs.length - 1], key = `a:${st.id}`;
+      if (runs.length > 1) b.append(h('span', 'pill', `×${runs.length}`));
+      b.className = `fnode ${st.state}`;
+      b.dataset.key = key;
+      b.title = `${m.name} · ${TEAM_TXT[st.state] || st.state}\n${st.desc}`;
+      b.setAttribute('aria-label', `${m.name}, ${st.state === 'running' ? 'working' : st.state}, ${runs.length} run${runs.length > 1 ? 's' : ''}: ${st.desc}`);
+      const d = {key, g: b, sid: f.session, n: {label: st.desc, type: m.name, state: st.state === 'error' ? 'done' : st.state,
+                                                  elapsed: Math.round(st.t1 - st.t0), last: '', ask: ''}};
+      b.onclick = () => openDetail(d);
+      ds.push(d);
+      place(b, x, y);
+    });
+  });
+  // runs that overlap in time are parallel: they branch from the same predecessor (the one that finished last before them)
+  const groups = [], edges = new Map();
+  f.steps.forEach(st => { const g = groups[groups.length - 1]; if (g && st.t0 < Math.min(...g.map(x => x.t1))) g.push(st); else groups.push([st]); });
+  groups.forEach((g, i) => g.forEach(st => {
+    const prev = i ? (groups[i - 1].filter(p => p.t1 <= st.t0 + 1).sort((p, q) => q.t1 - p.t1)[0] || groups[i - 1][0]).name : 'You';
+    if (prev !== st.name) edges.set(`${prev}>${st.name}`, [prev, st.name, st.state]);
+  }));
+  for (const [a, b, state] of edges.values()) {
+    const p = pos.get(a), q = pos.get(b);
+    if (!p || !q) continue;
+    const cls = state === 'running' ? 'active' : state === 'waiting' || state === 'stalled' ? 'wait' : 'done';
+    const d = q.x > p.x
+      ? `M${p.x + FW},${p.y + FH / 2} C${p.x + FW + 28},${p.y + FH / 2} ${q.x - 28},${q.y + FH / 2} ${q.x - 2},${q.y + FH / 2}`
+      : `M${p.x + FW / 2},${p.y + FH} C${p.x + FW / 2},${p.y + FH + 30} ${q.x + FW / 2},${q.y + FH + 30} ${q.x + FW / 2},${q.y + FH + 2}`;  // back to an earlier column: loop below
+    el('path', {d, class: `edge ${cls}`, 'marker-end': `url(#fa-${f.session})`}, svg);
+  }
+  box.append(cv);
+  wrap.append(title, box);
+  const out = {el: wrap, sig, ds};
+  flowEls.set(f.session, out);
+  return out;
+}
+
+function renderFlows(flows, team) {
+  const box = document.getElementById('flows');
+  if (!flows.length) { flowEls.clear(); box.replaceChildren(h('p', 'now', 'No team members used in the shown sessions yet.')); return []; }
+  const cs = flows.map(f => flowBlock(f, team)), ids = new Set(flows.map(f => f.session));
+  [...flowEls.keys()].forEach(k => ids.has(k) || flowEls.delete(k));
+  keepOrder(box, cs.map(c => c.el));
+  return cs.flatMap(c => c.ds);
 }
 
 function stageEl(l, s, j, card) {
@@ -833,7 +1011,7 @@ function openDetail(d) {
   openKey = d.key;
   detail = null;
   document.querySelectorAll('[data-key].sel').forEach(g => g.classList.remove('sel'));
-  d.g.classList.add('sel');
+  allDrawn().forEach(x => x.key === d.key && x.g.classList.add('sel'));
   const dr = document.getElementById('drawer');
   dr.classList.add('open');
   dr.setAttribute('aria-hidden', 'false');
@@ -855,7 +1033,8 @@ async function loadDetail() {
   const key = openKey, id = key === 'hub' || key.startsWith('q:') ? 'main' : key.startsWith('a:') ? key.slice(2) : null;
   if (!id) return;
   try {
-    const r = await fetch(`/api/agent?s=${encodeURIComponent(selected)}&id=${encodeURIComponent(id)}`, {cache: 'no-store'});
+    const sid = (allDrawn().find(x => x.key === key && x.sid) || {}).sid || selected;  // a team panel's run can be in any session
+    const r = await fetch(`/api/agent?s=${encodeURIComponent(sid)}&id=${encodeURIComponent(id)}`, {cache: 'no-store'});
     if (key !== openKey) return;  // another node was opened meanwhile
     detail = r.ok ? await r.json() : {missing: true};
   } catch (e) { detail = {missing: true}; }
@@ -863,7 +1042,7 @@ async function loadDetail() {
 }
 
 function renderDetail() {
-  const d = drawn.find(x => x.key === openKey);
+  const d = allDrawn().find(x => x.key === openKey);
   if (!d) return;
   const n = d.n, q = openKey.startsWith('q:'), data = detail || {};
   document.getElementById('dtitle').textContent = n.label;
@@ -928,10 +1107,11 @@ async function poll() {
     document.getElementById('counts').textContent =
       `${s.scopes.join(', ') || 'no watched repos'} · ${c.waiting} waiting on you · ${c.active} active sessions · ${c.running} running agents · ${c['stalled?']} stalled? · ${c.done} done · $${c.usd.toFixed(2)} · hides ${s.hide_after_min}m after last activity · live`;
     document.title = c.waiting ? `⏸ (${c.waiting}) waiting · Agent Monitor` : 'Agent Monitor';
+    teamDrawn = [...renderTeam(s.team || []), ...renderFlows(s.team_flows || [], s.team || [])];
     showGraph(s);
     if (openKey) {
-      const d = drawn.find(x => x.key === openKey);
-      if (!d) closeDetail(); else { d.g.classList.add('sel'); if (d.n.state !== 'done' || !detail) loadDetail(); else renderDetail(); }
+      const ds = allDrawn().filter(x => x.key === openKey), d = ds[0];
+      if (!d) closeDetail(); else { ds.forEach(x => x.g.classList.add('sel')); if (d.n.state !== 'done' || !detail) loadDetail(); else renderDetail(); }
     }
     if (navigator.setAppBadge) (c.waiting ? navigator.setAppBadge(c.waiting) : navigator.clearAppBadge()).catch(() => {});  // Dock icon badge
   } catch (e) {
