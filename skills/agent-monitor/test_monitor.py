@@ -10,7 +10,8 @@ from pathlib import Path
 
 
 def load(root, home):
-    os.environ.update(CLAUDE_PROJECTS_DIR=root, AGENT_MONITOR_HOME=home, AGENT_MONITOR_SCOPE="/proj")
+    os.environ.update(CLAUDE_PROJECTS_DIR=root, AGENT_MONITOR_HOME=home, AGENT_MONITOR_SCOPE="/proj",
+                      CLAUDE_AGENTS_DIR=os.path.join(home, "agents"))
     spec = importlib.util.spec_from_file_location(
         "agent_monitor_under_test", Path(__file__).with_name("monitor.py"))
     module = importlib.util.module_from_spec(spec)
@@ -357,6 +358,123 @@ class AgentMonitorTests(unittest.TestCase):
         self.assertEqual(self.m.agent_detail("abcdef12", "main")["prompt"], "add offline sync")
         self.assertIsNone(self.m.agent_detail("abcdef12", "../../etc"))  # only transcripts the dashboard lists
         self.assertIsNone(self.m.agent_detail("99999999", "main"))  # out of scope
+
+    def team_setup(self):
+        agents = self.home / "agents"
+        agents.mkdir()
+        (agents / "yui-junior.md").write_text("---\nname: yui-junior\ndescription: Yui, junior.\nmodel: haiku\n---\nbody")
+        (agents / "aiko-pdm.md").write_text("---\nname: aiko-pdm\ndescription: >\n  Aiko, PdM.\n  Plans work.\ntools: [Read]\n---\n")
+        (agents / "cavecrew-builder.md").write_text("---\ndescription: \"Builds.\"\nmodel: sonnet\n---\n")
+        (agents / "notes.txt").write_text("not an agent")
+        return self.root / "-proj" / "abcdef12-0000-0000-0000-000000000000" / "subagents"
+
+    def add_run(self, subs, aid, typ, finished=False, records=None, age=0):
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - age))
+        write_jsonl(subs / f"agent-{aid}.jsonl", records or [assistant(aid, now, MTOK, "work")])
+        (subs / f"agent-{aid}.meta.json").write_text(json.dumps({"description": f"task {aid}", "agentType": typ, **({"finished": True} if finished else {})}))
+        t = time.time() - age
+        for f in subs.glob(f"agent-{aid}.*"):
+            os.utime(f, (t, t))
+
+    def test_roster_order_model_folded_desc_and_stem_fallback(self):
+        self.team_setup()
+        r = self.m.roster()
+        self.assertEqual([a["name"] for a in r], ["aiko-pdm", "yui-junior", "cavecrew-builder"])
+        self.assertEqual(r[0], {"name": "aiko-pdm", "desc": "Aiko, PdM. Plans work.", "model": "inherit", "role": "pdm"})
+        self.assertEqual((r[1]["model"], r[2]["desc"], r[2]["model"]), ("haiku", "Builds.", "sonnet"))
+
+    def test_roster_puts_a_prefix_family_after_the_team(self):
+        self.team_setup()
+        (self.home / "agents" / "cavecrew-reviewer.md").write_text("---\nname: cavecrew-reviewer\n---\n")
+        (self.home / "agents" / "ben-reviewer.md").write_text("---\nname: ben-reviewer\n---\n")
+        names = [a["name"] for a in self.m.roster()]
+        self.assertEqual(names, ["aiko-pdm", "yui-junior", "ben-reviewer", "cavecrew-reviewer", "cavecrew-builder"])
+
+    def test_roster_skips_duplicate_names_and_reads_a_bom(self):
+        self.team_setup()
+        agents = self.home / "agents"
+        (agents / "zz-copy.md").write_text("---\nname: aiko-pdm\ndescription: second copy\n---\n")
+        (agents / "nao-qa.md").write_bytes("\ufeff---\nname: nao-qa\nmodel: opus\n---\n".encode())
+        r = {a["name"]: a for a in self.m.roster()}
+        self.assertEqual([a["name"] for a in self.m.roster()].count("aiko-pdm"), 1)
+        self.assertEqual(r["aiko-pdm"]["desc"], "Aiko, PdM. Plans work.")  # first file by path wins
+        self.assertEqual((r["nao-qa"]["model"], r["nao-qa"]["role"]), ("opus", "qa"))
+
+    def test_team_runs_today_count_by_first_timestamp(self):
+        subs = self.team_setup()
+        self.add_run(subs, "y1", "yui-junior", True, [assistant("y1", "2020-01-01T00:00:00Z", MTOK, "old start")])
+        self.add_run(subs, "y2", "yui-junior", True)
+        y = next(m for m in self.m.state()["team"] if m["name"] == "yui-junior")
+        self.assertEqual((y["runs_today"], y["usd_today"]), (1, 4.0))  # y1 was written today but started in 2020
+
+    def test_team_live_runs_oldest_first(self):
+        subs = self.team_setup()
+        self.add_run(subs, "y2", "yui-junior", records=[assistant("y2", "2026-11-13T00:09:00Z", MTOK, "b")])
+        self.add_run(subs, "y1", "yui-junior", records=[assistant("y1", "2026-11-13T00:01:00Z", MTOK, "a")])
+        y = next(m for m in self.m.state()["team"] if m["name"] == "yui-junior")
+        self.assertEqual([r["id"] for r in y["live"]], ["y1", "y2"])
+
+    def test_team_flows_chain_states_and_sessions_without_roster_runs(self):
+        subs = self.team_setup()
+        ts = lambda m: f"2026-11-13T01:{m:02d}:00Z"
+        bad = [assistant("p1", ts(1), MTOK, "plan"),
+               {"type": "user", "timestamp": ts(2), "message": {"content": [{"type": "tool_result", "tool_use_id": "t", "is_error": True}]}}]
+        self.add_run(subs, "p1", "aiko-pdm", True, bad)
+        self.add_run(subs, "y1", "yui-junior", records=[assistant("y1", ts(5), MTOK, "build")])
+        self.add_run(subs, "y0", "yui-junior", True, [assistant("y0", ts(0), MTOK, "first")])
+        flows = self.m.state()["team_flows"]  # abcdef12 also has a1/a2 (Plan, general-purpose): not roster runs
+        self.assertEqual(len(flows), 1)
+        self.assertEqual((flows[0]["session"], flows[0]["title"]), ("abcdef12", "add offline sync"))
+        self.assertEqual([(s["name"], s["id"], s["state"]) for s in flows[0]["steps"]],
+                         [("yui-junior", "y0", "done"), ("aiko-pdm", "p1", "error"), ("yui-junior", "y1", "running")])
+        other = self.root / "-proj" / "12345678-0000-0000-0000-000000000000"
+        write_jsonl(other.with_suffix(".jsonl"), [{"type": "user", "timestamp": ts(0), "message": {"content": "other"}}])
+        self.add_run(other / "subagents", "x1", "general-purpose")
+        self.assertEqual([f["session"] for f in self.m.state()["team_flows"]], ["abcdef12"])  # no roster runs: skipped
+
+    def test_team_status_from_runs(self):
+        subs = self.team_setup()
+        self.add_run(subs, "y1", "yui-junior")
+        self.add_run(subs, "y2", "yui-junior")
+        team = {m["name"]: m for m in self.m.state()["team"]}
+        y = team["yui-junior"]
+        self.assertEqual((y["state"], len(y["live"]), y["runs_today"], y["usd_today"]), ("running", 2, 2, 8.0))
+        self.assertEqual((y["live"][0]["title"], y["live"][0]["session"]), ("add offline sync", "abcdef12"))
+        self.assertEqual((team["aiko-pdm"]["state"], team["aiko-pdm"]["live"], team["aiko-pdm"]["runs_today"]), ("idle", [], 0))
+        self.assertIsNone(team["aiko-pdm"]["last_done"])
+
+    def test_team_stalled_and_waiting(self):
+        subs = self.team_setup()
+        self.add_run(subs, "y1", "yui-junior", age=15 * 60)
+        self.assertEqual(next(m for m in self.m.state()["team"] if m["name"] == "yui-junior")["state"], "stalled")
+        self.m.notify({"session_id": "abcdef12-0000-0000-0000-000000000000", "message": "permission"})
+        self.assertEqual(next(m for m in self.m.state()["team"] if m["name"] == "yui-junior")["state"], "waiting")
+
+    def test_team_error_from_latest_finished_run(self):
+        subs = self.team_setup()
+        bad = [{"type": "assistant", "timestamp": "2026-11-13T00:00:01Z", "message": {"content": [
+                   {"type": "tool_use", "id": "t", "name": "Bash", "input": {}}]}},
+               {"type": "user", "timestamp": "2026-11-13T00:00:09Z", "message": {"content": [
+                   {"type": "tool_result", "tool_use_id": "t", "is_error": True}]}}]
+        self.add_run(subs, "p1", "aiko-pdm", True, bad, age=60)
+        aiko = lambda: next(m for m in self.m.state()["team"] if m["name"] == "aiko-pdm")
+        self.assertEqual((aiko()["state"], aiko()["last_done"]["id"], aiko()["last_done"]["errors"]), ("error", "p1", 1))
+        self.assertEqual(aiko()["last_done"]["t1"], self.m.iso("2026-11-13T00:00:09Z").timestamp())
+        self.add_run(subs, "p2", "aiko-pdm", True)
+        self.assertEqual((aiko()["state"], aiko()["last_done"]["id"]), ("idle", "p2"))
+
+    def test_team_without_live_sessions_and_old_run_detail(self):
+        subs = self.team_setup()
+        self.add_run(subs, "p1", "aiko-pdm", True, age=2 * 86400)
+        old = time.time() - 2 * 86400
+        for f in self.root.rglob("*"):
+            os.utime(f, (old, old))
+        s = self.m.state()
+        self.assertEqual(s["graphs"], [])
+        aiko = next(m for m in s["team"] if m["name"] == "aiko-pdm")
+        self.assertEqual((aiko["state"], aiko["runs_today"], aiko["last_done"]["id"]), ("idle", 0, "p1"))
+        self.assertEqual(self.m.agent_detail("abcdef12", "p1")["desc"], "task p1")  # hidden session, still opens
+        self.assertIsNone(self.m.agent_detail("abcdef12", "nope"))
 
     def test_latest_session_for_project_dir(self):
         self.assertEqual(self.m.project_dir("/a/b.c"), "-a-b-c")

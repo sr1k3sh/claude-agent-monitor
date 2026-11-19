@@ -7,6 +7,7 @@ A Claude Code plugin: a live local dashboard (http://127.0.0.1:8765) of the Clau
 - Each node shows what the agent is doing now; click it for its prompt, tool-call timeline and final report. Pan and zoom the graph.
 - Default view is a **Tree**: session → lanes → stages → agents, left to right, as readable cards joined by curved lines. Every branch folds (▸/▾); live branches open down to the running agent, finished ones fold to a count badge (`5 ✓ · 1 ◔`). Your folds are remembered; **Expand all** / **Collapse finished** / **Fit**.
 - **Lanes** is a board, one row per lane (task pipeline lanes, else one per question); **Flow** is the flow graph. **Tree · Lanes · Flow** switches views (remembered).
+- Two **Team** panels sit above the session panel. **Team** lists every custom agent in `~/.claude/agents/`, live or not: green while one of its runs is working (×N when several), amber when waiting on you or stalled, red when its last run had tool errors, dim when idle; with its live runs (task, session, time, current tool), its last finished run, and runs and cost today. **Team flow** draws, per shown session that used team members, You → PdM → Developers → Review → QA with arrows in the order the runs started (parallel runs branch from the same member); unused members are dimmed. Click a member for that run's details.
 - Progress and time estimates: `done/total` per lane with a bar, `last activity 12s ago` on running agents (amber `stalled?` when quiet), and `usually ~2m · ~1m left (estimate)` from the median of your finished agents with the same role (shown only with 3+ runs).
 - Live tool calls, errors, tokens and estimated cost for every session and agent.
 - Only watched repos (plus their worktrees). Finished, idle or cleared sessions drop off on their own.
@@ -23,7 +24,7 @@ It only reads Claude Code's transcripts in `~/.claude/projects/` and keeps its o
 
 ## What it runs and touches
 
-- **Reads:** Claude Code's session transcripts under `~/.claude/projects/` (`*.jsonl` and `*/subagents/agent-*.jsonl` with their `.meta.json`), only for the repos in your watch list.
+- **Reads:** Claude Code's session transcripts under `~/.claude/projects/` (`*.jsonl` and `*/subagents/agent-*.jsonl` with their `.meta.json`), only for the repos in your watch list; and the frontmatter (name, description, model) of your custom agents in `~/.claude/agents/*.md` for the Team panels.
 - **Writes:** only `~/.claude/agent-monitor/scopes.json` (the watch list) and `~/.claude/agent-monitor/pipelines/*.json` (task pipelines you or Claude create).
 - **Runs:** `python3 monitor.py`, a stdlib HTTP server bound to `127.0.0.1:8765`, and `git rev-parse --git-common-dir` to map a worktree to its main checkout. The skill also `curl`s `http://127.0.0.1:8765/api` to see whether the server is up, and `open`s the page in your browser.
 - **Network:** no outbound requests. Nothing is sent anywhere; the page and its data never leave your machine. No dependencies to install.
@@ -61,6 +62,7 @@ Without Claude: `python3 skills/agent-monitor/monitor.py scope add <repo>`, then
 | `HIDE_AFTER_MIN` | `30` | Minutes of no activity before a session with agents is hidden |
 | `AGENT_MONITOR_HOME` | `~/.claude/agent-monitor` | Where `scopes.json` and `pipelines/` live |
 | `CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | Claude Code transcripts |
+| `CLAUDE_AGENTS_DIR` | `~/.claude/agents` | Custom agents listed in the Team panels |
 
 Costs are estimates at public API prices (`skills/agent-monitor/prices.json`), not your bill.
 
