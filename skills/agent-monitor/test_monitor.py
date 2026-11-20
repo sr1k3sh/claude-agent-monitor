@@ -362,7 +362,7 @@ class AgentMonitorTests(unittest.TestCase):
     def team_setup(self):
         agents = self.home / "agents"
         agents.mkdir()
-        (agents / "yui-junior.md").write_text("---\nname: yui-junior\ndescription: Yui, junior.\nmodel: haiku\n---\nbody")
+        (agents / "yui-junior.md").write_text("---\nname: yui-junior\ndescription: Yui, junior.\nmodel: haiku\neffort: low\n---\nbody")
         (agents / "aiko-pdm.md").write_text("---\nname: aiko-pdm\ndescription: >\n  Aiko, PdM.\n  Plans work.\ntools: [Read]\n---\n")
         (agents / "cavecrew-builder.md").write_text("---\ndescription: \"Builds.\"\nmodel: sonnet\n---\n")
         (agents / "notes.txt").write_text("not an agent")
@@ -380,8 +380,9 @@ class AgentMonitorTests(unittest.TestCase):
         self.team_setup()
         r = self.m.roster()
         self.assertEqual([a["name"] for a in r], ["aiko-pdm", "yui-junior", "cavecrew-builder"])
-        self.assertEqual(r[0], {"name": "aiko-pdm", "desc": "Aiko, PdM. Plans work.", "model": "inherit", "role": "pdm"})
+        self.assertEqual(r[0], {"name": "aiko-pdm", "desc": "Aiko, PdM. Plans work.", "model": "inherit", "effort": "", "role": "pdm"})
         self.assertEqual((r[1]["model"], r[2]["desc"], r[2]["model"]), ("haiku", "Builds.", "sonnet"))
+        self.assertEqual((r[1]["effort"], r[2]["role"]), ("low", "helper"))
 
     def test_roster_puts_a_prefix_family_after_the_team(self):
         self.team_setup()
@@ -389,6 +390,8 @@ class AgentMonitorTests(unittest.TestCase):
         (self.home / "agents" / "ben-reviewer.md").write_text("---\nname: ben-reviewer\n---\n")
         names = [a["name"] for a in self.m.roster()]
         self.assertEqual(names, ["aiko-pdm", "yui-junior", "ben-reviewer", "cavecrew-reviewer", "cavecrew-builder"])
+        roles = {a["name"]: a["role"] for a in self.m.roster()}
+        self.assertEqual((roles["cavecrew-reviewer"], roles["ben-reviewer"]), ("helper", "reviewer"))
 
     def test_roster_skips_duplicate_names_and_reads_a_bom(self):
         self.team_setup()
@@ -431,6 +434,36 @@ class AgentMonitorTests(unittest.TestCase):
         write_jsonl(other.with_suffix(".jsonl"), [{"type": "user", "timestamp": ts(0), "message": {"content": "other"}}])
         self.add_run(other / "subagents", "x1", "general-purpose")
         self.assertEqual([f["session"] for f in self.m.state()["team_flows"]], ["abcdef12"])  # no roster runs: skipped
+
+    def test_dispatch_events_attach_to_the_next_run_and_bad_lines_skipped(self):
+        subs = self.team_setup()
+        ts = lambda m: f"2026-11-13T01:{m:02d}:00Z"
+        self.add_run(subs, "y1", "yui-junior", records=[assistant("y1", ts(5), MTOK, "build")])
+        self.add_run(subs, "y0", "yui-junior", True, [assistant("y0", ts(0), MTOK, "first")])
+        t1 = self.m.iso(ts(5)).timestamp()
+        ev = lambda **k: json.dumps({"ts": t1 - 2, "session": "abcdef12-0000-0000-0000-000000000000", "agent": "yui-junior",
+                                     "kind": "reassign", "text": "mika-mid is busy, assigned to yui-junior"} | k)
+        path = self.home / "events.jsonl"
+        path.write_text("\n".join(["junk{", "123", json.dumps({"ts": t1, "session": "abcdef12", "agent": "yui-junior", "kind": "reassign"}),
+                                   ev(), ev(session="99999999-0", text="other session"), ev(ts=t1 - 7200, text="old"),
+                                   '{"ts": ' + "9" * 400 + ', "session": "abcdef12", "agent": "yui-junior", "kind": "reassign", "text": "huge"}',
+                                   "[" * 20000, ev(text=5), ev(kind="constructor", text="unknown kind")]) + "\n")
+        want = [{"kind": "reassign", "text": "mika-mid is busy, assigned to yui-junior"}]
+        s = self.m.state()
+        self.assertEqual({st["id"]: st["dispatch"] for st in s["team_flows"][0]["steps"] if st["name"] == "yui-junior"}, {"y0": [], "y1": want})
+        y = next(m for m in s["team"] if m["name"] == "yui-junior")
+        self.assertEqual([(r["id"], r["dispatch"]) for r in y["live"]], [("y1", want)])
+        last = ev(text="in the tail") + "\n"
+        self.m.EVENTS_TAIL = len(last) + 100  # only the tail is read: the cut padding line is skipped
+        path.write_text(ev(text="before the tail") + "\n" + "x" * 300 + "\n" + last)
+        self.assertEqual(self.m.decisions(self.m.agents()), {"y1": [{"kind": "reassign", "text": "in the tail"}]})
+        self.m.EVENTS_TAIL = 1 << 16
+        path.write_text(ev(text="first") + "\n" + ev(text="second") + "\n")  # two same-agent runs, two events: one each
+        self.add_run(subs, "y2", "yui-junior", records=[assistant("y2", ts(6), MTOK, "again")])
+        self.assertEqual(self.m.decisions(self.m.agents()),
+                         {"y1": [{"kind": "reassign", "text": "first"}], "y2": [{"kind": "reassign", "text": "second"}]})
+        path.unlink()
+        self.assertEqual(self.m.state()["team_flows"][0]["steps"][0]["dispatch"], [])
 
     def test_team_status_from_runs(self):
         subs = self.team_setup()

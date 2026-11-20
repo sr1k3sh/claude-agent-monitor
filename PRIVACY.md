@@ -6,7 +6,7 @@ Agent Monitor runs entirely on your computer. It has no server, account, analyti
 
 Claude Code's session transcripts under `~/.claude/projects/`, only for the repositories in your watch list. Transcripts can contain anything you or Claude wrote in a session, including personal data such as names or email addresses. The dashboard shows excerpts of them (prompts, tool calls, token counts) to you, in your browser, from a server bound to `127.0.0.1`.
 
-For the Team panels it also reads the frontmatter (name, description, model) at the top of your custom agent files in `~/.claude/agents/*.md`.
+For the Team panels it also reads the frontmatter (name, description, model, effort) at the top of your custom agent files in `~/.claude/agents/*.md`, and `~/.claude/agent-monitor/events.jsonl` if another hook writes it (dispatch notes shown on the Team panels). The plugin writes neither.
 
 ## What it stores
 

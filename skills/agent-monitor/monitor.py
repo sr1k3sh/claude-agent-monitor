@@ -63,6 +63,7 @@ HIST_MAX, HIST_TTL, MIN_RUNS = 400, 60, 3  # estimates: newest 400 agent transcr
 ASK_TOOLS = {"AskUserQuestion", "ExitPlanMode"}  # a tool_use of these without its result = waiting on the user
 WAIT_DIR = os.path.join(HOME, "waiting")
 ROLE_RANK = ["pdm", "techlead", "senior", "mid", "junior", "reviewer", "qa"]  # Team panels: role = the name's last "-" part
+EVENTS_FILE, EVENTS_TAIL = os.path.join(HOME, "events.jsonl"), 64 * 1024  # dispatch decisions other hooks append; tail only
 
 
 def notify(data):
@@ -723,7 +724,7 @@ def graphs(rows, pipes=(), hist=None):
 
 
 def roster():
-    """Custom agents from AGENTS_DIR/*.md frontmatter: name (else file stem), description, model, in ROLE_RANK order."""
+    """Custom agents from AGENTS_DIR/*.md frontmatter: name (else file stem), description, model, effort, in ROLE_RANK order."""
     out, seen = [], set()
     for p in sorted(glob.glob(os.path.join(AGENTS_DIR, "*.md"))):
         try:
@@ -746,12 +747,13 @@ def roster():
         if name in seen:  # two files with the same name: Claude Code runs one, so list it once (first file by path)
             continue
         seen.add(name)
-        out.append({"name": name, "desc": short(fm.get("description", ""), 160), "model": fm.get("model") or "inherit"})
-    # A family of agents sharing a prefix (e.g. cavecrew-*) is a toolkit, not staff: it goes after the team, with no role.
+        out.append({"name": name, "desc": short(fm.get("description", ""), 160), "model": fm.get("model") or "inherit",
+                    "effort": fm.get("effort", "")})
+    # A family of agents sharing a prefix (e.g. cavecrew-*) is a toolkit, not staff: it goes after the team as "helper".
     prefixes = [a["name"].split("-", 1)[0] for a in out]
     for a in out:
         suffix = a["name"].rsplit("-", 1)[-1]
-        a["role"] = suffix if suffix in ROLE_RANK and prefixes.count(a["name"].split("-", 1)[0]) == 1 else ""
+        a["role"] = suffix if suffix in ROLE_RANK and prefixes.count(a["name"].split("-", 1)[0]) == 1 else "helper"
     rank = lambda n: ROLE_RANK.index(n.rsplit("-", 1)[-1]) if n.rsplit("-", 1)[-1] in ROLE_RANK else len(ROLE_RANK)
     family = lambda n: prefixes.count(n.split("-", 1)[0]) > 1
     return sorted(out, key=lambda a: (family(a["name"]), rank(a["name"]), a["name"]))
@@ -811,7 +813,42 @@ def team_history():
     return out
 
 
-def team(rows):
+def events():
+    """Dispatch decisions from the last EVENTS_TAIL bytes of EVENTS_FILE: (ts, session[:8], agent, kind, text); bad lines skipped."""
+    try:
+        with open(EVENTS_FILE, "rb") as f:
+            f.seek(max(0, os.fstat(f.fileno()).st_size - EVENTS_TAIL))
+            lines = f.read().decode("utf-8", "replace").split("\n")
+    except OSError:
+        return []
+    out = []
+    for ln in lines:
+        try:
+            e = json.loads(ln)
+            agent, kind, text = e["agent"], e["kind"], e["text"]
+            if kind not in ("reassign", "downgrade") or not all(isinstance(v, str) for v in (agent, kind, text)):
+                continue
+            out.append((float(e["ts"]), str(e["session"])[:8], agent, kind, short(text, 160)))
+        except (ValueError, KeyError, TypeError, AttributeError, OverflowError, RecursionError):
+            continue
+    return out
+
+
+def decisions(rows):
+    """Subagent id -> [{"kind","text"}]: each event attaches to the first run of its agent in its session that started in ts-5..ts+600."""
+    subs = sorted((a for a in rows if a["kind"] == "sub"), key=lambda a: a["t0"])
+    out, used = {}, set()
+    for ts, sess, agent, kind, text in events():
+        # shortcut: time-window match, a run started >10 min after its dispatch (e.g. slow permission prompt) loses its note and a denied dispatch's note lands on the next run; key on tool_use_id if that matters
+        a = next((a for a in subs if a["session"] == sess and a["type"] == agent and ts - 5 <= a["t0"] <= ts + 600
+                  and (a["id"], kind) not in used), None)
+        if a:
+            used.add((a["id"], kind))
+            out.setdefault(a["id"], []).append({"kind": kind, "text": text})
+    return out
+
+
+def team(rows, dec):
     """Every roster agent with its live runs (subagent type == its name, oldest first) and its last run and today's
     runs and cost (team_history, refreshed with rows' finished runs so a run that just ended shows at once)."""
     members = roster()
@@ -828,7 +865,7 @@ def team(rows):
         m = by.get(a["type"]) if a["kind"] == "sub" else None
         if m and a["status"] in ("running", "waiting", "stalled?"):
             m["live"].append({k: a[k] for k in ("id", "session", "desc", "status", "elapsed", "act", "last", "t0")}
-                             | {"title": titles.get(a["session"], "")})
+                             | {"title": titles.get(a["session"], ""), "dispatch": dec.get(a["id"], [])})
         elif m and a["status"] == "done" and (not m["last_done"] or a["t1"] > m["last_done"]["t1"]):
             m["last_done"] = {"id": a["id"], "session": a["session"], "desc": a["desc"], "t1": a["t1"], "errors": a["errors"]}
     for m in by.values():
@@ -841,7 +878,7 @@ def team(rows):
 FLOW_STATE = {"running": "running", "waiting": "waiting", "stalled?": "stalled"}
 
 
-def team_flows(rows, names):
+def team_flows(rows, names, dec):
     """Per shown session (newest first), its runs of roster agents in start order: the hand-off chain the Team flow
     panel draws. A finished run with tool errors is 'error'. Sessions without roster runs are left out."""
     titles = {a["session"]: a["desc"] for a in rows if a["kind"] == "main"}
@@ -852,14 +889,16 @@ def team_flows(rows, names):
         if a["kind"] == "sub" and a["type"] in names:
             by.setdefault(a["session"], []).append({
                 "name": a["type"], "id": a["id"], "desc": a["desc"], "t0": a["t0"], "t1": a["t1"],
-                "state": FLOW_STATE.get(a["status"]) or ("error" if a["errors"] else "done")})
+                "state": FLOW_STATE.get(a["status"]) or ("error" if a["errors"] else "done"),
+                "dispatch": dec.get(a["id"], [])})
     return [{"session": s, "title": titles.get(s, f"session {s}"), "steps": steps}
             for s, steps in sorted(by.items(), key=lambda kv: -newest[kv[0]])]
 
 
 def state():
     rows, hist = agents(), history()
-    members = team(rows)  # before the filter below: a member's live run counts even in a hidden session
+    dec = decisions(rows)  # unfiltered rows, like team()
+    members = team(rows, dec)  # before the filter below: a member's live run counts even in a hidden session
     pipes = pipelines(rows, hist)
     finished = {p["session"] for p in pipes if all(n["state"] == "done" for l in p["lanes"] for n in l["stages"])}
     # a session without agents shows only while it is being written (a live chat), not while idle
@@ -869,7 +908,7 @@ def state():
     pipes = [p for p in pipes if p["session"] in live]
     counts = {s: sum(a["status"] == s for a in rows) for s in ("waiting", "active", "running", "stalled?", "idle", "done")}
     counts["usd"] = round(sum(a["tok"]["usd"] for a in rows), 2)
-    flows = team_flows(rows, {m["name"] for m in members})
+    flows = team_flows(rows, {m["name"] for m in members}, dec)
     return {"pipelines": pipes, "graphs": graphs(rows, pipes, hist), "cards": cards_by_session(rows), "counts": counts,
             "team": members, "team_flows": flows,
             "hide_after_min": HIDE_S / 60, "page": os.path.getmtime(os.path.join(HERE, "index.html")), "scopes": [os.path.basename(d) for d in scopes()]}

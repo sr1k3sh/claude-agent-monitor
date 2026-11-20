@@ -149,6 +149,7 @@ li .ok{color:var(--done)} li .bad{color:var(--err)} li b{color:var(--fg)}
 .scard.member{max-width:none;flex:none;padding:5px 9px;gap:0;cursor:pointer}
 .member .top{display:flex;gap:4px;align-items:baseline} .member .top b{flex:1;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .scard.member small,.scard.member .doing{font-size:12px}
+.scard.member .disp,.fnode .dx{color:var(--wait)} .fnode .dx{margin-left:4px}
 .scard.member.running,.fnode.running{border-left-color:var(--done);animation:tbreathe 2.4s ease-in-out infinite}
 .scard.member.stalled,.scard.member.waiting,.fnode.stalled,.fnode.waiting{border-left-color:var(--wait)} .scard.member.error,.fnode.error{border-left-color:var(--err)}
 .scard.member.idle{opacity:.6} .scard.member.idle:hover,.scard.member.idle:focus-visible{opacity:1}
@@ -753,6 +754,7 @@ function renderLanes(lanes) {
 }
 
 /* team panels: always shown above the session panel; their clickable items live in teamDrawn (drawn is the session view's) */
+const DX = {reassign: '↪', downgrade: '↓'};
 const TEAM_TXT = {running: 'working', waiting: 'waiting on you', stalled: 'stalled?', error: 'last run had errors', idle: 'idle'};
 let teamDrawn = [];
 const memberEls = new Map(), flowEls = new Map();  // name / session -> {el, sig, ds}: rebuilt only when their data changes
@@ -770,16 +772,17 @@ function memberCard(m) {
   const b = c ? c.el : h('button');
   b.className = `scard member ${m.state}`;
   b.dataset.key = key;
-  b.title = `${m.model} · ${m.desc}`;
+  b.title = `${[m.model, m.effort].filter(Boolean).join(' · ')} · ${m.desc}`;
   b.setAttribute('aria-label', `${m.name}, ${TEAM_TXT[m.state]}${m.live.length ? `, ${m.live.length} live run${m.live.length > 1 ? 's' : ''}` : ''}`);
   const top = h('span', 'top'), t = h('b');
   t.append(h('span', 'ic', ICON[m.state] || '○'), m.name);
   if (m.live.length > 1) t.append(h('span', 'pill', `×${m.live.length}`));
   top.append(t, h('small', '', `${m.runs_today} today · $${m.usd_today.toFixed(2)}`));
-  const parts = [top];
+  const parts = [top, h('small', '', [m.model, m.effort].filter(Boolean).join(' · '))];
   const clocks = m.live.slice(0, 2).map(r => {
     const rn = {state: STATE[r.status] || 'running', act: r.act, elapsed: r.elapsed}, c = h('small');
     parts.push(h('span', 'doing', `${r.status === 'waiting' ? '⏸' : '▶'} ${r.desc}${r.last ? ` — ${r.last}` : ''}`), c);
+    if (r.dispatch.length) parts.push(h('small', 'disp', r.dispatch.map(e => `${DX[e.kind] || '•'} ${e.text}`).join('; ')));
     const where = `${cut(r.title || 'session', 40)} · s:${r.session}`;
     return extra => { c.textContent = [where, r.status === 'waiting' ? 'waiting on you' : fmt(rn.elapsed + extra), actText(rn)].filter(Boolean).join(' · '); };
   });
@@ -812,19 +815,19 @@ function renderTeam(team) {
   return cs.flatMap(c => c.ds);
 }
 
-/* team flow: per session, You -> role columns (PdM -> Developers -> Review -> QA); arrows follow the runs' start order */
+/* team flow: per session, You -> role columns (PdM -> Developers -> Review -> QA -> Helpers used); arrows follow the runs' start order */
 const FCOLS = [['PdM', ['pdm']], ['Developers', ['techlead', 'senior', 'mid', 'junior']], ['Review', ['reviewer']], ['QA', ['qa']]];
 const FW = 150, FH = 28, FCW = 186, FRH = 36, FTOP = 18, FROWS = 3;  // a column wraps after FROWS members
 
 function flowBlock(f, team) {
-  const sig = JSON.stringify([f.title, f.steps.map(st => [st.name, st.id, st.state, st.desc]), team.map(m => [m.name, m.role])]);
+  const sig = JSON.stringify([f.title, f.steps.map(st => [st.name, st.id, st.state, st.desc, st.dispatch]), team.map(m => [m.name, m.role])]);
   const c = flowEls.get(f.session);
   if (c && c.sig === sig) return c;
   const used = new Map();  // name -> its runs in this session, oldest first
   f.steps.forEach(st => used.set(st.name, [...(used.get(st.name) || []), st]));
   const cols = FCOLS.map(([label, roles]) => [label, team.filter(m => roles.includes(m.role))]).filter(([, ms]) => ms.length);
   const other = team.filter(m => !FCOLS.some(([, roles]) => roles.includes(m.role)) && used.has(m.name));
-  if (other.length) cols.push(['Other', other]);
+  if (other.length) cols.push(['Helpers', other]);
   const rows = Math.min(FROWS, Math.max(1, ...cols.map(([, ms]) => ms.length))), pos = new Map(), ds = [];
   const colX = [FCW];
   cols.forEach(([, ms], ci) => { colX[ci + 1] = colX[ci] + Math.ceil(ms.length / FROWS) * FCW; });
@@ -853,8 +856,10 @@ function flowBlock(f, team) {
       if (runs.length > 1) b.append(h('span', 'pill', `×${runs.length}`));
       b.className = `fnode ${st.state}`;
       b.dataset.key = key;
-      b.title = `${m.name} · ${TEAM_TXT[st.state] || st.state}\n${st.desc}`;
-      b.setAttribute('aria-label', `${m.name}, ${st.state === 'running' ? 'working' : st.state}, ${runs.length} run${runs.length > 1 ? 's' : ''}: ${st.desc}`);
+      const disp = runs.flatMap(r => r.dispatch), dtx = disp.map(e => e.text).join('; ');  // notes of every run the node merges
+      if (disp.length) b.append(h('span', 'dx', disp.map(e => DX[e.kind] || '•').join('')));
+      b.title = `${m.name} · ${TEAM_TXT[st.state] || st.state}\n${st.desc}${dtx ? `\n${dtx}` : ''}`;
+      b.setAttribute('aria-label', `${m.name}, ${st.state === 'running' ? 'working' : st.state}, ${runs.length} run${runs.length > 1 ? 's' : ''}: ${st.desc}${dtx ? `, ${dtx}` : ''}`);
       const d = {key, g: b, sid: f.session, n: {label: st.desc, type: m.name, state: st.state === 'error' ? 'done' : st.state,
                                                   elapsed: Math.round(st.t1 - st.t0), last: '', ask: ''}};
       b.onclick = () => openDetail(d);
